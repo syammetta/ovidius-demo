@@ -27,6 +27,7 @@ from app.ingestion.job_queue import (
     recover_stale_running_jobs,
     update_job_progress,
 )
+from app.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,12 @@ def _build_pipeline_steps(
     return states
 
 
+async def _pause_requested(job_id: str) -> bool:
+    latest = await get_job(job_id)
+    progress = (latest or {}).get("progress", {})
+    return bool(progress.get("pause_requested"))
+
+
 async def _process_document(
     job_id: str,
     content: str,
@@ -78,6 +85,11 @@ async def _process_document(
     current_doc: int | None = None,
     total_docs: int | None = None,
 ) -> dict[str, Any]:
+    tracer = get_tracer("ingestion")
+
+    if await _pause_requested(job_id):
+        raise PauseRequested()
+
     shared_progress: dict[str, Any] = {
         "phase": "processing",
         "current_title": source_title,
@@ -88,69 +100,48 @@ async def _process_document(
     if total_docs is not None:
         shared_progress["total_docs"] = total_docs
 
-    await update_job_progress(
-        job_id,
-        {
-            **shared_progress,
-            "pipeline_stage": "classify_metadata",
-            "pipeline_steps": _build_pipeline_steps(active="classify_metadata"),
-        },
-    )
-    t0 = time.perf_counter()
-    metadata = await classify_document_metadata(
-        content=content,
-        source_url=source_url,
-        source_title=source_title,
-        default_section=section,
-    )
-    classify_ms = round((time.perf_counter() - t0) * 1000, 1)
-    effective_section = metadata.section or section
-    await append_job_log(
-        job_id,
-        "Metadata classified: "
-        f"type={metadata.doc_type}, section={effective_section}, "
-        f"topics={metadata.tax_topics or []}, tags={metadata.metadata_tags or []} "
-        f"({classify_ms}ms, llm={'yes' if metadata.llm_used else 'no'})",
-    )
-    if metadata.reason:
-        await append_job_log(job_id, f"Classification note: {metadata.reason[:220]}")
+    with tracer.start_as_current_span("ingest_document") as doc_span:
+        doc_span.set_attribute("source_url", source_url)
+        doc_span.set_attribute("source_title", source_title[:200])
+        doc_span.set_attribute("job_id", job_id)
+        doc_span.set_attribute("interface", "ingestion")
+        if current_doc is not None:
+            doc_span.set_attribute("doc_index", f"{current_doc}/{total_docs or '?'}")
 
-    await update_job_progress(
-        job_id,
-        {
-            **shared_progress,
-            "metadata_labels": {
-                "doc_type": metadata.doc_type,
-                "section": effective_section,
-                "tax_topics": metadata.tax_topics,
-                "metadata_tags": metadata.metadata_tags,
-                "llm_used": metadata.llm_used,
+        await update_job_progress(
+            job_id,
+            {
+                **shared_progress,
+                "pipeline_stage": "classify_metadata",
+                "pipeline_steps": _build_pipeline_steps(active="classify_metadata"),
             },
-            "pipeline_stage": "chunking",
-            "pipeline_steps": _build_pipeline_steps(
-                active="chunking",
-                completed={"classify_metadata"},
-            ),
-        },
-    )
+        )
 
-    t0 = time.perf_counter()
-    result = chunk_document(
-        content,
-        source_url,
-        source_title,
-        effective_section,
-        doc_type_override=metadata.doc_type,
-    )
-    chunk_ms = round((time.perf_counter() - t0) * 1000, 1)
-    doc_type = result.parents[0].document_type if result.parents else "unknown"
-    await append_job_log(
-        job_id,
-        f"Chunked: {len(result.parents)} parents, {len(result.children)} children ({doc_type}) in {chunk_ms}ms",
-    )
+        with tracer.start_as_current_span("classify_metadata") as cls_span:
+            t0 = time.perf_counter()
+            metadata = await classify_document_metadata(
+                content=content,
+                source_url=source_url,
+                source_title=source_title,
+                default_section=section,
+            )
+            classify_ms = round((time.perf_counter() - t0) * 1000, 1)
+            effective_section = metadata.section or section
+            cls_span.set_attribute("doc_type", metadata.doc_type)
+            cls_span.set_attribute("section", effective_section)
+            cls_span.set_attribute("llm_used", metadata.llm_used)
+            cls_span.set_attribute("duration_ms", classify_ms)
 
-    if not result.children:
-        await append_job_log(job_id, "No chunks produced - skipping.")
+        await append_job_log(
+            job_id,
+            "Metadata classified: "
+            f"type={metadata.doc_type}, section={effective_section}, "
+            f"topics={metadata.tax_topics or []}, tags={metadata.metadata_tags or []} "
+            f"({classify_ms}ms, llm={'yes' if metadata.llm_used else 'no'})",
+        )
+        if metadata.reason:
+            await append_job_log(job_id, f"Classification note: {metadata.reason[:220]}")
+
         await update_job_progress(
             job_id,
             {
@@ -162,106 +153,167 @@ async def _process_document(
                     "metadata_tags": metadata.metadata_tags,
                     "llm_used": metadata.llm_used,
                 },
-                "pipeline_stage": "done",
+                "pipeline_stage": "chunking",
                 "pipeline_steps": _build_pipeline_steps(
-                    completed={"classify_metadata", "chunking"},
-                    skipped={"contextualizing", "storing_parents", "embedding_children"},
+                    active="chunking",
+                    completed={"classify_metadata"},
                 ),
             },
         )
-        return {"parents": 0, "children": 0, "title": source_title, "document_type": doc_type}
 
-    await update_job_progress(
-        job_id,
-        {
-            **shared_progress,
-            "pipeline_stage": "contextualizing",
-            "pipeline_steps": _build_pipeline_steps(
-                active="contextualizing",
-                completed={"classify_metadata", "chunking"},
-            ),
-        },
-    )
-    total_chunks = len(result.children)
-    await append_job_log(job_id, f"Contextualizing {total_chunks} chunks...")
-    t0 = time.perf_counter()
-    last_logged = 0
-
-    async def _ctx_progress(done: int, total: int, parent_label: str) -> None:
-        nonlocal last_logged
-        pct = round(done / total * 100) if total else 100
-        should_log = (
-            done == 1
-            or done == total
-            or done - last_logged >= max(10, total // 10)
-        )
-        if should_log:
-            last_logged = done
-            elapsed = round((time.perf_counter() - t0) * 1000)
-            await append_job_log(
-                job_id,
-                f"  Contextualizing {done}/{total} ({pct}%) — \"{parent_label}\" ({elapsed}ms elapsed)",
+        with tracer.start_as_current_span("chunk_document") as chunk_span:
+            t0 = time.perf_counter()
+            result = chunk_document(
+                content,
+                source_url,
+                source_title,
+                effective_section,
+                doc_type_override=metadata.doc_type,
             )
+            chunk_ms = round((time.perf_counter() - t0) * 1000, 1)
+            doc_type = result.parents[0].document_type if result.parents else "unknown"
+            chunk_span.set_attribute("parent_count", len(result.parents))
+            chunk_span.set_attribute("child_count", len(result.children))
+            chunk_span.set_attribute("doc_type", doc_type)
+            chunk_span.set_attribute("duration_ms", chunk_ms)
+
+        await append_job_log(
+            job_id,
+            f"Chunked: {len(result.parents)} parents, {len(result.children)} children ({doc_type}) in {chunk_ms}ms",
+        )
+
+        if not result.children:
+            doc_span.set_attribute("skipped", True)
+            await append_job_log(job_id, "No chunks produced - skipping.")
             await update_job_progress(
                 job_id,
                 {
                     **shared_progress,
-                    "pipeline_stage": "contextualizing",
+                    "metadata_labels": {
+                        "doc_type": metadata.doc_type,
+                        "section": effective_section,
+                        "tax_topics": metadata.tax_topics,
+                        "metadata_tags": metadata.metadata_tags,
+                        "llm_used": metadata.llm_used,
+                    },
+                    "pipeline_stage": "done",
                     "pipeline_steps": _build_pipeline_steps(
-                        active="contextualizing",
                         completed={"classify_metadata", "chunking"},
+                        skipped={"contextualizing", "storing_parents", "embedding_children"},
                     ),
-                    "contextualize_done": done,
-                    "contextualize_total": total,
-                    "contextualize_pct": pct,
                 },
             )
+            return {"parents": 0, "children": 0, "title": source_title, "document_type": doc_type}
 
-    contextualized = await contextualize_chunks(result.children, result.parents, on_progress=_ctx_progress)
-    contextualize_ms = round((time.perf_counter() - t0) * 1000, 1)
-    await append_job_log(job_id, f"Contextualization complete — {total_chunks} chunks in {contextualize_ms}ms.")
+        await update_job_progress(
+            job_id,
+            {
+                **shared_progress,
+                "pipeline_stage": "contextualizing",
+                "pipeline_steps": _build_pipeline_steps(
+                    active="contextualizing",
+                    completed={"classify_metadata", "chunking"},
+                ),
+            },
+        )
+        total_chunks = len(result.children)
+        await append_job_log(job_id, f"Contextualizing {total_chunks} chunks...")
 
-    await update_job_progress(
-        job_id,
-        {
-            **shared_progress,
-            "pipeline_stage": "storing_parents",
-            "pipeline_steps": _build_pipeline_steps(
-                active="storing_parents", completed={"classify_metadata", "chunking", "contextualizing"}
-            ),
-        },
-    )
-    await append_job_log(job_id, "Storing parents...")
-    t0 = time.perf_counter()
-    await store_parents(result.parents)
-    store_ms = round((time.perf_counter() - t0) * 1000, 1)
-    await append_job_log(job_id, f"Stored parents in {store_ms}ms.")
+        with tracer.start_as_current_span("contextualize_chunks") as ctx_span:
+            ctx_span.set_attribute("chunk_count", total_chunks)
+            ctx_span.set_attribute("parent_count", len(result.parents))
+            t0 = time.perf_counter()
+            last_logged = 0
 
-    await update_job_progress(
-        job_id,
-        {
-            **shared_progress,
-            "pipeline_stage": "embedding_children",
-            "pipeline_steps": _build_pipeline_steps(
-                active="embedding_children",
-                completed={"classify_metadata", "chunking", "contextualizing", "storing_parents"},
-            ),
-        },
-    )
-    await append_job_log(job_id, "Embedding and storing children...")
-    t0 = time.perf_counter()
-    await embed_and_store_children(contextualized)
-    embed_ms = round((time.perf_counter() - t0) * 1000, 1)
-    await append_job_log(job_id, f"Embedded and stored children in {embed_ms}ms.")
+            async def _ctx_progress(done: int, total: int, parent_label: str) -> None:
+                nonlocal last_logged
+                pct = round(done / total * 100) if total else 100
+                should_log = (
+                    done == 1
+                    or done == total
+                    or done - last_logged >= max(10, total // 10)
+                )
+                if should_log:
+                    last_logged = done
+                    elapsed = round((time.perf_counter() - t0) * 1000)
+                    await append_job_log(
+                        job_id,
+                        f"  Contextualizing {done}/{total} ({pct}%) — \"{parent_label}\" ({elapsed}ms elapsed)",
+                    )
+                    await update_job_progress(
+                        job_id,
+                        {
+                            **shared_progress,
+                            "pipeline_stage": "contextualizing",
+                            "pipeline_steps": _build_pipeline_steps(
+                                active="contextualizing",
+                                completed={"classify_metadata", "chunking"},
+                            ),
+                            "contextualize_done": done,
+                            "contextualize_total": total,
+                            "contextualize_pct": pct,
+                        },
+                    )
+                if await _pause_requested(job_id):
+                    raise PauseRequested()
 
-    await update_job_progress(
-        job_id,
-        {
-            **shared_progress,
-            "pipeline_stage": "done",
-            "pipeline_steps": _build_pipeline_steps(completed=set(PIPELINE_STEPS)),
-        },
-    )
+            contextualized = await contextualize_chunks(result.children, result.parents, on_progress=_ctx_progress)
+            contextualize_ms = round((time.perf_counter() - t0) * 1000, 1)
+            ctx_span.set_attribute("duration_ms", contextualize_ms)
+
+        await append_job_log(job_id, f"Contextualization complete — {total_chunks} chunks in {contextualize_ms}ms.")
+
+        await update_job_progress(
+            job_id,
+            {
+                **shared_progress,
+                "pipeline_stage": "storing_parents",
+                "pipeline_steps": _build_pipeline_steps(
+                    active="storing_parents", completed={"classify_metadata", "chunking", "contextualizing"}
+                ),
+            },
+        )
+        await append_job_log(job_id, "Storing parents...")
+        with tracer.start_as_current_span("store_parents") as sp_span:
+            t0 = time.perf_counter()
+            await store_parents(result.parents)
+            store_ms = round((time.perf_counter() - t0) * 1000, 1)
+            sp_span.set_attribute("parent_count", len(result.parents))
+            sp_span.set_attribute("duration_ms", store_ms)
+        await append_job_log(job_id, f"Stored parents in {store_ms}ms.")
+
+        await update_job_progress(
+            job_id,
+            {
+                **shared_progress,
+                "pipeline_stage": "embedding_children",
+                "pipeline_steps": _build_pipeline_steps(
+                    active="embedding_children",
+                    completed={"classify_metadata", "chunking", "contextualizing", "storing_parents"},
+                ),
+            },
+        )
+        await append_job_log(job_id, "Embedding and storing children...")
+        with tracer.start_as_current_span("embed_children") as em_span:
+            t0 = time.perf_counter()
+            await embed_and_store_children(contextualized)
+            embed_ms = round((time.perf_counter() - t0) * 1000, 1)
+            em_span.set_attribute("child_count", len(contextualized))
+            em_span.set_attribute("duration_ms", embed_ms)
+        await append_job_log(job_id, f"Embedded and stored children in {embed_ms}ms.")
+
+        await update_job_progress(
+            job_id,
+            {
+                **shared_progress,
+                "pipeline_stage": "done",
+                "pipeline_steps": _build_pipeline_steps(completed=set(PIPELINE_STEPS)),
+            },
+        )
+
+        doc_span.set_attribute("final_parent_count", len(result.parents))
+        doc_span.set_attribute("final_child_count", len(contextualized))
+        doc_span.set_attribute("doc_type", doc_type)
 
     return {
         "parents": len(result.parents),
@@ -272,13 +324,19 @@ async def _process_document(
 
 
 async def _run_url_job(job: dict[str, Any]) -> dict[str, Any]:
+    tracer = get_tracer("ingestion")
     payload = job["payload"]
     url = payload["url"]
     use_cache = bool(payload.get("use_cache", True))
 
     await update_job_progress(job["job_id"], {"phase": "crawling", "completion": 10, "current_url": url})
     await append_job_log(job["job_id"], f"Crawling {url}...")
-    doc = await crawl_url(url, use_cache=use_cache)
+    with tracer.start_as_current_span("crawl_url") as crawl_span:
+        crawl_span.set_attribute("url", url)
+        crawl_span.set_attribute("use_cache", use_cache)
+        crawl_span.set_attribute("interface", "ingestion")
+        doc = await crawl_url(url, use_cache=use_cache)
+        crawl_span.set_attribute("title", doc.title[:200])
     await append_job_log(job["job_id"], f"Fetched: {doc.title[:80]}")
     await update_job_progress(
         job["job_id"],
