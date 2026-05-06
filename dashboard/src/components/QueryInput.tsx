@@ -5,8 +5,6 @@ const EXAMPLES = [
   "What is the standard deduction for a single filer in 2025?",
   "Compare Roth IRA vs Traditional IRA contribution limits",
   "How does the Child Tax Credit phase out for high earners?",
-  "What are the EITC income limits for married filing jointly?",
-  "When is the deadline to file taxes for 2025?",
 ];
 
 interface Props {
@@ -43,84 +41,81 @@ export default function QueryInput({ onSubmit, isProcessing, connectionStatus, o
     }
   }
 
-  const statusColor =
-    connectionStatus === "connected"
-      ? "bg-[var(--green)]"
-      : connectionStatus === "connecting"
-        ? "bg-[var(--yellow)]"
-        : "bg-[var(--text-muted)]";
-
   return (
     <div className="space-y-3">
-      {/* Connection + Mode */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onConnect}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-md border border-[var(--border)] hover:border-[var(--border-active)] transition-colors"
-          >
-            <span className={`w-2 h-2 rounded-full ${statusColor}`} />
-            {connectionStatus === "connected" ? "Connected" : "Connect"}
-          </button>
-          <div className="flex rounded-md overflow-hidden border border-[var(--border)]">
-            <button
-              onClick={() => setMode("direct")}
-              className={`px-3 py-1.5 text-xs transition-colors ${
-                mode === "direct"
-                  ? "bg-[var(--accent-dim)] text-[var(--accent)] border-r border-[var(--border)]"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-r border-[var(--border)]"
-              }`}
-            >
-              Direct QA
-            </button>
-            <button
-              onClick={() => setMode("agent")}
-              className={`px-3 py-1.5 text-xs transition-colors ${
-                mode === "agent"
-                  ? "bg-[var(--accent-dim)] text-[var(--accent)]"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              }`}
-            >
-              Agent
-            </button>
-          </div>
-        </div>
-        <span className="text-[11px] text-[var(--text-muted)]">
-          {mode === "direct" ? "Hybrid Search + Rerank + CRAG + Generate" : "Multi-tool Agent Loop"}
-        </span>
-      </div>
-
-      {/* Input */}
-      <div className="relative">
+      {/* Input card */}
+      <div
+        className="bg-[var(--surface)] rounded-2xl px-4 pt-3 pb-2"
+        style={{ boxShadow: "var(--shadow-md)" }}
+      >
         <textarea
           ref={inputRef}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Ask a tax question..."
-          rows={2}
+          rows={1}
           disabled={isProcessing}
-          className="w-full bg-[var(--bg-card)] border border-[var(--border)] rounded-lg px-4 py-3 pr-24 text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] resize-none text-sm disabled:opacity-50"
+          className="w-full bg-transparent text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none resize-none text-sm leading-6 disabled:opacity-50"
         />
-        <button
-          onClick={handleSubmit}
-          disabled={isProcessing || !question.trim()}
-          className="absolute right-3 bottom-3 px-4 py-1.5 bg-[var(--accent)] text-white text-xs font-medium rounded-md hover:opacity-90 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          {isProcessing ? "Running..." : "Send"}
-        </button>
+        <div className="flex items-center justify-between pt-1 pb-1">
+          <div className="flex items-center gap-2">
+            {/* Mode toggle */}
+            <div className="flex rounded-full overflow-hidden border border-[var(--border-light)]">
+              <button
+                onClick={() => setMode("direct")}
+                className={`px-3 py-1 text-xs transition-colors ${
+                  mode === "direct"
+                    ? "bg-[var(--accent-light)] text-[var(--accent)] font-medium"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                }`}
+              >
+                Direct QA
+              </button>
+              <button
+                onClick={() => setMode("agent")}
+                className={`px-3 py-1 text-xs transition-colors ${
+                  mode === "agent"
+                    ? "bg-[var(--accent-light)] text-[var(--accent)] font-medium"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                }`}
+              >
+                Agent
+              </button>
+            </div>
+            <span className="text-[11px] text-[var(--text-muted)] hidden sm:inline">
+              {mode === "direct" ? "Hybrid Search + Rerank + CRAG" : "Multi-tool Agent Loop"}
+            </span>
+          </div>
+          <button
+            onClick={handleSubmit}
+            disabled={isProcessing || !question.trim()}
+            className="w-8 h-8 rounded-full bg-[var(--accent)] text-white flex items-center justify-center hover:opacity-90 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            {isProcessing ? (
+              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
 
-      {/* Examples */}
-      <div className="flex gap-2 flex-wrap">
-        {EXAMPLES.slice(0, 3).map((ex) => (
+      {/* Example chips */}
+      <div className="flex gap-2 flex-wrap justify-center">
+        {EXAMPLES.map((ex) => (
           <button
             key={ex}
             onClick={() => {
               setQuestion(ex);
               inputRef.current?.focus();
             }}
-            className="text-[11px] px-2.5 py-1 rounded-full border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:border-[var(--border-active)] transition-colors truncate max-w-[280px]"
+            className="text-xs px-3 py-1.5 rounded-full border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
           >
             {ex}
           </button>

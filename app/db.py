@@ -13,7 +13,7 @@ _pool: asyncpg.Pool | None = None
 def _ssl_context():
     """Return SSL context if DATABASE_URL suggests a remote host."""
     url = settings.database_url
-    if "localhost" in url or "127.0.0.1" in url or "sslmode=disable" in url:
+    if "localhost" in url or "127.0.0.1" in url or ".railway.internal" in url or "sslmode=disable" in url:
         return None
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
