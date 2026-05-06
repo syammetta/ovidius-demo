@@ -1,6 +1,7 @@
 """Run database migrations."""
 
 import asyncio
+import ssl
 from pathlib import Path
 
 import asyncpg
@@ -11,7 +12,14 @@ MIGRATIONS_DIR = Path("migrations")
 
 
 async def run_migrations():
-    conn = await asyncpg.connect(settings.database_url)
+    url = settings.database_url
+    kwargs = {}
+    if "localhost" not in url and "127.0.0.1" not in url and "sslmode=disable" not in url:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        kwargs["ssl"] = ctx
+    conn = await asyncpg.connect(url, **kwargs)
     try:
         migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
         for migration in migration_files:

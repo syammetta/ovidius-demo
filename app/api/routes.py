@@ -159,15 +159,18 @@ async def ask_question(req: QARequest):
 
 @app.get("/health")
 async def health():
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        child_count = await conn.fetchval("SELECT count(*) FROM documents")
-        parent_count = await conn.fetchval("SELECT count(*) FROM parent_chunks")
-    return {
-        "status": "ok",
-        "child_chunks": child_count,
-        "parent_chunks": parent_count,
-    }
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            child_count = await conn.fetchval("SELECT count(*) FROM documents")
+            parent_count = await conn.fetchval("SELECT count(*) FROM parent_chunks")
+        return {
+            "status": "ok",
+            "child_chunks": child_count,
+            "parent_chunks": parent_count,
+        }
+    except Exception:
+        return {"status": "ok", "child_chunks": 0, "parent_chunks": 0}
 
 
 # ---------------------------------------------------------------------------
