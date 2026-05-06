@@ -20,6 +20,7 @@ import time
 from typing import Awaitable, Callable
 
 import anthropic
+import httpx
 
 from app.config import settings
 from app.ingestion.chunker import ParentChunk, ChildChunk
@@ -30,10 +31,10 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
 _CONCURRENCY = 10
-_REQUEST_TIMEOUT = 30.0
-_MAX_RETRIES = 4
-_BASE_BACKOFF_SECONDS = 1.5
-_MAX_BACKOFF_SECONDS = 20.0
+_REQUEST_TIMEOUT = 20.0
+_MAX_RETRIES = 2
+_BASE_BACKOFF_SECONDS = 1.0
+_MAX_BACKOFF_SECONDS = 8.0
 
 _INDEX_SEE_PATTERN_THRESHOLD = 3
 _INDEX_COMMA_RATIO_THRESHOLD = 0.15
@@ -132,6 +133,10 @@ async def _contextualize_one(
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 t0 = time.perf_counter()
+                if attempt == 0:
+                    logger.debug("Haiku call for chunk %s", child.chunk_id[:16])
+                else:
+                    logger.warning("Haiku retry %d/%d for chunk %s", attempt, _MAX_RETRIES, child.chunk_id[:16])
                 response = await asyncio.wait_for(
                     client.messages.create(
                         model="claude-haiku-4-5-20251001",
@@ -239,7 +244,10 @@ async def contextualize_chunks(
     """
     tracer = get_tracer("contextualizer")
     parent_map = {p.parent_id: p for p in parents}
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(
+        api_key=settings.anthropic_api_key,
+        timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+    )
     progress = on_progress or _noop_progress
     semaphore = asyncio.Semaphore(_CONCURRENCY)
 
@@ -310,12 +318,34 @@ async def contextualize_chunks(
                 await progress(done_count, total_count, parent_label)
 
             if eligible:
-                results = await asyncio.gather(
-                    *[_process(c) for c in eligible],
-                    return_exceptions=True,
+                logger.info(
+                    "Starting %d Haiku API calls for parent '%s' (done=%d/%d)",
+                    len(eligible), parent_label[:60], done_count, total_count,
                 )
+                group_timeout = max(120.0, len(eligible) * 15.0)
+                try:
+                    results = await asyncio.wait_for(
+                        asyncio.gather(
+                            *[_process(c) for c in eligible],
+                            return_exceptions=True,
+                        ),
+                        timeout=group_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Parent group '%s' timed out after %.0fs (%d eligible chunks). "
+                        "Falling back to uncontextualized content.",
+                        parent_label, group_timeout, len(eligible),
+                    )
+                    for child in eligible:
+                        if not any(c.chunk_id == child.chunk_id for c in contextualized):
+                            contextualized.append(child)
+                            done_count += 1
+                    await progress(done_count, total_count, parent_label)
+                    results = []
+
                 pause_exc = None
-                for i, result in enumerate(results):
+                for result in results:
                     if isinstance(result, Exception):
                         if result.__class__.__name__ == "PauseRequested":
                             pause_exc = result
