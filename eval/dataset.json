@@ -1,0 +1,12 @@
+{
+  "description": "Evaluation dataset for documentation QA — 15 pairs across easy/medium/hard tiers",
+  "pairs": [
+    {
+      "id": "easy_01",
+      "tier": "easy",
+      "question": "placeholder — replace with actual question after ingesting docs",
+      "expected_answer_contains": [],
+      "expected_source_urls": []
+    }
+  ]
+}
