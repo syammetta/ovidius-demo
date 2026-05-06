@@ -119,8 +119,9 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
     pages = 0
 
     for base_url, paths in IRS_PUBLICATIONS.items():
-        await append_job_log(job["job_id"], f"Crawling {len(paths)} IRS publications...")
-        docs = await crawl_docs(base_url, paths, use_cache=True)
+        unique_paths = list(dict.fromkeys(paths))
+        await append_job_log(job["job_id"], f"Crawling {len(unique_paths)} IRS publications...")
+        docs = await crawl_docs(base_url, unique_paths, use_cache=True)
         for doc in docs:
             stats = await _process_document(
                 job_id=job["job_id"],
@@ -133,8 +134,9 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
             total_children += stats["children"]
             pages += 1
 
-    await append_job_log(job["job_id"], f"Crawling {len(IRS_TAX_TOPICS)} tax topics...")
-    docs = await crawl_urls(IRS_TAX_TOPICS, use_cache=True)
+    unique_topics = list(dict.fromkeys(IRS_TAX_TOPICS))
+    await append_job_log(job["job_id"], f"Crawling {len(unique_topics)} tax topics...")
+    docs = await crawl_urls(unique_topics, use_cache=True)
     for doc in docs:
         stats = await _process_document(
             job_id=job["job_id"],
@@ -148,8 +150,9 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
         pages += 1
 
     for base_url, paths in IRS_INSTRUCTIONS.items():
-        await append_job_log(job["job_id"], f"Crawling {len(paths)} form instructions...")
-        docs = await crawl_docs(base_url, paths, use_cache=True)
+        unique_paths = list(dict.fromkeys(paths))
+        await append_job_log(job["job_id"], f"Crawling {len(unique_paths)} form instructions...")
+        docs = await crawl_docs(base_url, unique_paths, use_cache=True)
         for doc in docs:
             stats = await _process_document(
                 job_id=job["job_id"],

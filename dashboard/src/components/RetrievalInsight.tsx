@@ -36,6 +36,7 @@ export default function RetrievalInsight({ detail, stages }: Props) {
   const rrStage = stages.find((s) => s.name === "rerank");
   const ceStage = stages.find((s) => s.name === "corrective_eval");
   const qrStage = stages.find((s) => s.name === "query_retry");
+  const pfStage = stages.find((s) => s.name === "parent_fetch");
 
   const cls = detail?.classification;
   const strat = detail?.strategy;
@@ -190,6 +191,24 @@ export default function RetrievalInsight({ detail, stages }: Props) {
               <div className="pl-5.5 text-[var(--text-muted)] italic truncate">
                 &ldquo;{String(qrStage.detail.transformed_query).slice(0, 80)}&rdquo;
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Parent chunk expansion */}
+        {pfStage?.status === "complete" && pfStage.detail && (
+          <div className="flex items-center gap-2 text-[var(--text-secondary)]">
+            <svg className="w-3.5 h-3.5 text-[var(--green)]" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0l4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0l-5.571 3-5.571-3" />
+            </svg>
+            <span className="font-medium">Parent Expansion</span>
+            {typeof pfStage.detail.parents === "number" && (
+              <span className="text-[var(--text-muted)] font-mono">
+                {pfStage.detail.parents as number} parent{(pfStage.detail.parents as number) !== 1 ? "s" : ""}
+              </span>
+            )}
+            {pfStage.duration_ms !== undefined && (
+              <span className="font-mono text-[var(--text-muted)]">{pfStage.duration_ms.toFixed(0)}ms</span>
             )}
           </div>
         )}
