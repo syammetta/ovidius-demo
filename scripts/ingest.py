@@ -247,8 +247,18 @@ async def ingest_document(doc, stats: dict):
         print("    Skipping — no chunks produced")
         return
 
-    print(f"    Contextualizing {len(result.children)} chunks...")
-    contextualized = await contextualize_chunks(result.children, result.parents)
+    total_chunks = len(result.children)
+    print(f"    Contextualizing {total_chunks} chunks...")
+    last_pct = -1
+
+    async def _print_progress(done: int, total: int, parent_label: str) -> None:
+        nonlocal last_pct
+        pct = round(done / total * 100) if total else 100
+        if pct >= last_pct + 10 or done == 1 or done == total:
+            last_pct = pct
+            print(f"      {done}/{total} ({pct}%) — \"{parent_label}\"")
+
+    contextualized = await contextualize_chunks(result.children, result.parents, on_progress=_print_progress)
 
     print("    Storing parents...")
     await store_parents(result.parents)

@@ -182,11 +182,44 @@ async def _process_document(
             ),
         },
     )
-    await append_job_log(job_id, f"Contextualizing {len(result.children)} chunks...")
+    total_chunks = len(result.children)
+    await append_job_log(job_id, f"Contextualizing {total_chunks} chunks...")
     t0 = time.perf_counter()
-    contextualized = await contextualize_chunks(result.children, result.parents)
+    last_logged = 0
+
+    async def _ctx_progress(done: int, total: int, parent_label: str) -> None:
+        nonlocal last_logged
+        pct = round(done / total * 100) if total else 100
+        should_log = (
+            done == 1
+            or done == total
+            or done - last_logged >= max(10, total // 10)
+        )
+        if should_log:
+            last_logged = done
+            elapsed = round((time.perf_counter() - t0) * 1000)
+            await append_job_log(
+                job_id,
+                f"  Contextualizing {done}/{total} ({pct}%) — \"{parent_label}\" ({elapsed}ms elapsed)",
+            )
+            await update_job_progress(
+                job_id,
+                {
+                    **shared_progress,
+                    "pipeline_stage": "contextualizing",
+                    "pipeline_steps": _build_pipeline_steps(
+                        active="contextualizing",
+                        completed={"classify_metadata", "chunking"},
+                    ),
+                    "contextualize_done": done,
+                    "contextualize_total": total,
+                    "contextualize_pct": pct,
+                },
+            )
+
+    contextualized = await contextualize_chunks(result.children, result.parents, on_progress=_ctx_progress)
     contextualize_ms = round((time.perf_counter() - t0) * 1000, 1)
-    await append_job_log(job_id, f"Contextualization complete in {contextualize_ms}ms.")
+    await append_job_log(job_id, f"Contextualization complete — {total_chunks} chunks in {contextualize_ms}ms.")
 
     await update_job_progress(
         job_id,

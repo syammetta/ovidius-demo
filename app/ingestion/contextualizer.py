@@ -11,26 +11,27 @@ generates context referencing the cached parent. This makes the technique cost-e
 Reference: https://www.anthropic.com/news/contextual-retrieval
 """
 
+import logging
+from typing import Awaitable, Callable
+
 import anthropic
 
 from app.config import settings
 from app.ingestion.chunker import ParentChunk, ChildChunk
 
-CONTEXT_PROMPT = """<document>
-{document}
-</document>
+logger = logging.getLogger(__name__)
 
-Here is the chunk we want to situate within the whole document:
-<chunk>
-{chunk}
-</chunk>
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
-Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the context, nothing else."""
+
+async def _noop_progress(done: int, total: int, parent_title: str) -> None:
+    pass
 
 
 async def contextualize_chunks(
     children: list[ChildChunk],
     parents: list[ParentChunk],
+    on_progress: ProgressCallback | None = None,
 ) -> list[ChildChunk]:
     """Add contextual prefixes to child chunks using Anthropic's contextual retrieval approach.
 
@@ -39,20 +40,24 @@ async def contextualize_chunks(
     """
     parent_map = {p.parent_id: p for p in parents}
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    progress = on_progress or _noop_progress
 
     parent_groups: dict[str, list[ChildChunk]] = {}
     for child in children:
         parent_groups.setdefault(child.parent_id, []).append(child)
 
     contextualized = []
+    done_count = 0
+    total_count = len(children)
 
     for parent_id, group in parent_groups.items():
         parent = parent_map.get(parent_id)
         if not parent:
-            for child in group:
-                child.content = child.content
             contextualized.extend(group)
+            done_count += len(group)
             continue
+
+        parent_label = parent.section or parent.source_title or parent_id[:12]
 
         for child in group:
             try:
@@ -83,7 +88,8 @@ async def contextualize_chunks(
                 )
                 context = response.content[0].text.strip()
                 contextualized_content = f"{context}\n\n{child.content}"
-            except Exception:
+            except Exception as e:
+                logger.warning("Contextualization failed for chunk %s: %s", child.chunk_id[:16], e)
                 contextualized_content = child.content
 
             updated = ChildChunk(
@@ -99,5 +105,8 @@ async def contextualize_chunks(
             )
             updated._contextual_content = contextualized_content
             contextualized.append(updated)
+            done_count += 1
+
+            await progress(done_count, total_count, parent_label)
 
     return contextualized
