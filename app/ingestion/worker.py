@@ -286,7 +286,17 @@ async def _process_document(
                 except Exception:
                     pass
 
-            contextualized = await contextualize_chunks(result.children, result.parents, on_progress=_ctx_progress)
+            async def _ctx_log(msg: str) -> None:
+                try:
+                    await append_job_log(job_id, msg)
+                except Exception:
+                    pass
+
+            contextualized = await contextualize_chunks(
+                result.children, result.parents,
+                on_progress=_ctx_progress,
+                on_log=_ctx_log,
+            )
             contextualize_ms = round((time.perf_counter() - t0) * 1000, 1)
             ctx_span.set_attribute("duration_ms", contextualize_ms)
 

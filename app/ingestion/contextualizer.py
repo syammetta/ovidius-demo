@@ -231,10 +231,18 @@ async def _contextualize_one(
     return updated, stats
 
 
+LogCallback = Callable[[str], Awaitable[None]]
+
+
+async def _noop_log(msg: str) -> None:
+    pass
+
+
 async def contextualize_chunks(
     children: list[ChildChunk],
     parents: list[ParentChunk],
     on_progress: ProgressCallback | None = None,
+    on_log: LogCallback | None = None,
 ) -> list[ChildChunk]:
     """Add contextual prefixes to child chunks using Anthropic's contextual retrieval approach.
 
@@ -249,11 +257,27 @@ async def contextualize_chunks(
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
     )
     progress = on_progress or _noop_progress
+    log = on_log or _noop_log
     semaphore = asyncio.Semaphore(_CONCURRENCY)
 
     parent_groups: dict[str, list[ChildChunk]] = {}
     for child in children:
         parent_groups.setdefault(child.parent_id, []).append(child)
+
+    try:
+        t0_probe = time.perf_counter()
+        probe = await asyncio.wait_for(
+            client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Say OK"}],
+            ),
+            timeout=15.0,
+        )
+        probe_ms = round((time.perf_counter() - t0_probe) * 1000)
+        await log(f"  [ctx] Haiku probe OK ({probe_ms}ms, {probe.content[0].text.strip()})")
+    except Exception as e:
+        await log(f"  [ctx] Haiku probe FAILED: {type(e).__name__}: {e}")
 
     contextualized: list[ChildChunk] = []
     done_count = 0
@@ -318,11 +342,12 @@ async def contextualize_chunks(
                 await progress(done_count, total_count, parent_label)
 
             if eligible:
-                logger.info(
-                    "Starting %d Haiku API calls for parent '%s' (done=%d/%d)",
-                    len(eligible), parent_label[:60], done_count, total_count,
+                await log(
+                    f"  [ctx] Starting {len(eligible)} Haiku calls for parent '{parent_label[:50]}' "
+                    f"(done={done_count}/{total_count})"
                 )
                 group_timeout = max(120.0, len(eligible) * 15.0)
+                t_group = time.perf_counter()
                 try:
                     results = await asyncio.wait_for(
                         asyncio.gather(
@@ -332,10 +357,10 @@ async def contextualize_chunks(
                         timeout=group_timeout,
                     )
                 except asyncio.TimeoutError:
-                    logger.error(
-                        "Parent group '%s' timed out after %.0fs (%d eligible chunks). "
-                        "Falling back to uncontextualized content.",
-                        parent_label, group_timeout, len(eligible),
+                    elapsed_s = round(time.perf_counter() - t_group, 1)
+                    await log(
+                        f"  [ctx] TIMEOUT after {elapsed_s}s on parent '{parent_label[:50]}' "
+                        f"({len(eligible)} chunks). Falling back to raw content."
                     )
                     for child in eligible:
                         if not any(c.chunk_id == child.chunk_id for c in contextualized):
@@ -343,6 +368,13 @@ async def contextualize_chunks(
                             done_count += 1
                     await progress(done_count, total_count, parent_label)
                     results = []
+                else:
+                    elapsed_s = round(time.perf_counter() - t_group, 1)
+                    errors = sum(1 for r in results if isinstance(r, Exception))
+                    await log(
+                        f"  [ctx] Completed parent '{parent_label[:50]}' in {elapsed_s}s "
+                        f"({len(eligible)} chunks, {errors} errors)"
+                    )
 
                 pause_exc = None
                 for result in results:
