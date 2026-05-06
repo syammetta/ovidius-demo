@@ -252,31 +252,39 @@ async def _process_document(
                 if should_log:
                     last_logged = done
                     elapsed = round((time.perf_counter() - t0) * 1000)
-                    await append_job_log(
-                        job_id,
-                        f"  Contextualizing {done}/{total} ({pct}%) — \"{parent_label}\" ({elapsed}ms elapsed)",
-                    )
-                    await update_job_progress(
-                        job_id,
-                        {
-                            **shared_progress,
-                            "pipeline_stage": "contextualizing",
-                            "pipeline_steps": _build_pipeline_steps(
-                                active="contextualizing",
-                                completed={"classify_metadata", "chunking"},
-                            ),
-                            "contextualize_done": done,
-                            "contextualize_total": total,
-                            "contextualize_pct": pct,
-                    "chunk_config": {
-                        "chunk_size": settings.chunk_size,
-                        "chunk_overlap": settings.chunk_overlap,
-                        "chunk_strategy": metadata.doc_type,
-                    },
-                        },
-                    )
-                if await _pause_requested(job_id):
-                    raise PauseRequested()
+                    try:
+                        await append_job_log(
+                            job_id,
+                            f"  Contextualizing {done}/{total} ({pct}%) — \"{parent_label}\" ({elapsed}ms elapsed)",
+                        )
+                        await update_job_progress(
+                            job_id,
+                            {
+                                **shared_progress,
+                                "pipeline_stage": "contextualizing",
+                                "pipeline_steps": _build_pipeline_steps(
+                                    active="contextualizing",
+                                    completed={"classify_metadata", "chunking"},
+                                ),
+                                "contextualize_done": done,
+                                "contextualize_total": total,
+                                "contextualize_pct": pct,
+                                "chunk_config": {
+                                    "chunk_size": settings.chunk_size,
+                                    "chunk_overlap": settings.chunk_overlap,
+                                    "chunk_strategy": metadata.doc_type,
+                                },
+                            },
+                        )
+                    except Exception:
+                        logger.debug("Failed to update progress at %d/%d", done, total)
+                try:
+                    if await _pause_requested(job_id):
+                        raise PauseRequested()
+                except PauseRequested:
+                    raise
+                except Exception:
+                    pass
 
             contextualized = await contextualize_chunks(result.children, result.parents, on_progress=_ctx_progress)
             contextualize_ms = round((time.perf_counter() - t0) * 1000, 1)

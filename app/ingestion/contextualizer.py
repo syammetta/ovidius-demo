@@ -310,7 +310,22 @@ async def contextualize_chunks(
                 await progress(done_count, total_count, parent_label)
 
             if eligible:
-                await asyncio.gather(*[_process(c) for c in eligible])
+                results = await asyncio.gather(
+                    *[_process(c) for c in eligible],
+                    return_exceptions=True,
+                )
+                pause_exc = None
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        if result.__class__.__name__ == "PauseRequested":
+                            pause_exc = result
+                        else:
+                            logger.warning(
+                                "Contextualization task failed for chunk in '%s': %s",
+                                parent_label, result,
+                            )
+                if pause_exc:
+                    raise pause_exc
 
             group_span.set_attribute("total_input_tokens", total_input_tokens)
             group_span.set_attribute("total_output_tokens", total_output_tokens)
