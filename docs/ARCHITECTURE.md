@@ -1,6 +1,6 @@
 # Architecture Document: Ovidius Doc QA
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Date:** 2026-05-06
 
 ---
@@ -16,6 +16,10 @@
 4. **Trust but verify.** Corrective RAG evaluates retrieval quality before generation. If the system isn't confident, it says so rather than hallucinating from irrelevant context.
 
 5. **Single retrieval core, multiple surfaces.** Every interface (API, agent, MCP, copilot) calls the same pipeline. No logic duplication.
+
+6. **Durable async work.** Long-running ingestion is queue-backed and resumable; UI lifecycle never controls backend execution.
+
+7. **Private demo by default.** Dashboard access is protected by an access code gate and cookie-authenticated session.
 
 ## 2. Retrieval Pipeline Deep Dive
 
@@ -200,6 +204,45 @@ After (contextualized chunk):
 
 **The fundamental tradeoff:** small chunks produce focused embeddings (precise retrieval) but lack context (poor generation). Large chunks provide context but produce noisy embeddings (imprecise retrieval). Parent-child resolves this: retrieve on children, generate from parents.
 
+### 3.4 Durable Ingestion Queue (Web + Worker)
+
+Ingestion no longer runs in process-local memory via ad-hoc `asyncio` tasks.
+
+```
+Browser / Dashboard
+    │
+    │ POST /api/ingest/*
+    ▼
+┌──────────────────────────────┐
+│ Web Service (FastAPI)        │
+│ - validates request          │
+│ - inserts ingestion_jobs row │
+│ - appends ingestion_job_logs │
+│ - returns task_id            │
+└──────────────┬───────────────┘
+               │
+               ├──────────────► Optional Redis queue signal (LPUSH/BRPOP)
+               │
+               ▼
+┌──────────────────────────────┐
+│ Worker Service               │
+│ - claims queued job          │
+│ - runs crawl/chunk/context   │
+│ - writes progress logs/stats │
+│ - marks completed/failed     │
+└──────────────┬───────────────┘
+               │
+               ▼
+      Postgres (source of truth)
+      - ingestion_jobs
+      - ingestion_job_logs
+```
+
+Notes:
+- Postgres is the authoritative queue and state store.
+- Redis is optional acceleration for faster wake-up; system still works without Redis.
+- In single-service environments, an inline worker fallback can process queued jobs.
+
 ## 4. Evaluation Architecture
 
 ### RAGAS Metrics
@@ -228,19 +271,25 @@ Every query through the dashboard is background-scored. The eval panel shows run
 
 ```
 Railway Project (same network)
-├─────────────────────────────────────────────────────┐
-│                                                      │
-│  ┌──────────────────────┐    ┌─────────────────────┐│
-│  │   FastAPI Service     │    │  Postgres + pgvector ││
-│  │                       │◄──►│                     ││
-│  │  ┌─ POST /qa         │    │  ┌─ parent_chunks   ││
-│  │  ├─ POST /agent/chat │    │  ├─ documents (child ││
-│  │  ├─ GET /health      │    │  │   + embeddings    ││
-│  │  ├─ GET / (dashboard)│    │  │   + tsvector)     ││
-│  │  └─ WS /ws/trace     │    │  └─ sessions        ││
-│  └───────────┬──────────┘    └─────────────────────┘│
-│              │                                       │
-└──────────────┼───────────────────────────────────────┘
+├──────────────────────────────────────────────────────────────────────┐
+│                                                                      │
+│  ┌────────────────────────────┐      ┌────────────────────────────┐  │
+│  │ Web Service (FastAPI + UI) │◄────►│ Postgres + pgvector        │  │
+│  │                            │      │                            │  │
+│  │ - /qa, /agent, /ws/qa      │      │ - parent_chunks            │  │
+│  │ - /api/ingest/* enqueue     │      │ - documents               │  │
+│  │ - /demo-access gate         │      │ - sessions                │  │
+│  │ - dashboard + assets        │      │ - ingestion_jobs          │  │
+│  │ - query/traces/metrics APIs │      │ - ingestion_job_logs      │  │
+│  └───────────────┬─────────────┘      └───────────────┬────────────┘  │
+│                  │                                    ▲               │
+│                  ▼                                    │               │
+│      ┌────────────────────────────┐        ┌──────────────────────┐   │
+│      │ Worker Service             │        │ Redis (optional)     │   │
+│      │ - claims/executes jobs     │◄──────►│ queue wake-up signal │   │
+│      │ - updates logs/progress    │        └──────────────────────┘   │
+│      └────────────────────────────┘                                   │
+└──────────────┬─────────────────────────────────────────────────────────┘
                │
     ┌──────────┼──────────────────────┐
     │          │                      │
@@ -302,6 +351,46 @@ created_at           TIMESTAMPTZ
 
 **Production upgrades:** HNSW index for embedding (better recall at scale), ParadeDB `pg_search` for true BM25 scoring (vs Postgres ts_rank_cd approximation).
 
+### sessions
+
+```sql
+session_id   TEXT PRIMARY KEY
+messages     JSONB NOT NULL DEFAULT '[]'
+created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+```
+
+Used by agent and WebSocket QA mode to preserve conversational continuity across page reloads and reconnects.
+
+### ingestion_jobs
+
+```sql
+job_id       TEXT PRIMARY KEY
+job_type     TEXT NOT NULL       -- url | file | corpus
+source       TEXT NOT NULL       -- source URL / file:// / corpus identifier
+payload      JSONB NOT NULL
+status       TEXT NOT NULL       -- queued | running | completed | failed
+progress     JSONB NOT NULL
+error        TEXT
+attempts     INTEGER NOT NULL DEFAULT 0
+max_attempts INTEGER NOT NULL DEFAULT 3
+claimed_by   TEXT
+claimed_at   TIMESTAMPTZ
+started_at   TIMESTAMPTZ
+finished_at  TIMESTAMPTZ
+created_at   TIMESTAMPTZ
+updated_at   TIMESTAMPTZ
+```
+
+### ingestion_job_logs
+
+```sql
+id          BIGSERIAL PRIMARY KEY
+job_id      TEXT REFERENCES ingestion_jobs(job_id) ON DELETE CASCADE
+log         TEXT NOT NULL
+created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+```
+
 ## 7. Key Technical Decisions
 
 | Decision | Chose | Over | Rationale |
@@ -316,6 +405,9 @@ created_at           TIMESTAMPTZ
 | Embeddings | Voyage-3 (1024d) | OpenAI, Cohere | Anthropic-recommended, strong retrieval benchmarks |
 | BM25 implementation | Postgres tsvector/tsquery | ParadeDB pg_search | Built-in, no extension install needed. Note: ParadeDB for production. |
 | Vector store | Postgres pgvector (Railway) | Pinecone, Supabase | Same-network, SQL-native, no vendor lock-in |
+| Ingestion execution | Web enqueue + worker consume | In-process `asyncio` task map | Durable across tab closes/redeploys; supports retries and scaling |
+| Queue substrate | Postgres queue + optional Redis signal | Redis-only required queue | Works with existing infra first, Redis boosts responsiveness |
+| Demo security | Access-code gate + HTTP-only cookie | Open dashboard root | Keeps private demo private without full auth stack |
 
 ## 8. What We'd Add Next
 

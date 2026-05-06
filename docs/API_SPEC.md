@@ -1,6 +1,6 @@
 # API Specification: Ovidius Doc QA
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Base URL:** `https://<railway-app>.railway.app`
 
 ---
@@ -182,20 +182,121 @@ System health check with database connectivity and corpus size.
 ```json
 {
   "status": "ok",
-  "documents": 142
+  "child_chunks": 142,
+  "parent_chunks": 37,
+  "startup_db_error": ""
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `status` | string | `"ok"` if all systems operational |
-| `documents` | integer | Number of chunks in the vector store |
+| `child_chunks` | integer | Number of child chunks in `documents` |
+| `parent_chunks` | integer | Number of parent chunks in `parent_chunks` |
+| `startup_db_error` | string | Startup DB error detail when degraded; empty string when healthy |
 
 ---
 
 ### GET /
 
-Serves the live dashboard (static HTML).
+Serves the live dashboard (static HTML). Redirects to `/demo-access` unless demo access cookie is present.
+
+---
+
+### GET /demo-access
+
+Serves the private demo landing page and access code form.
+
+### POST /demo-access
+
+Validates access code and sets an HTTP-only cookie used to access `/` and static dashboard assets.
+
+### POST /demo-logout
+
+Clears the demo access cookie and redirects to `/demo-access`.
+
+---
+
+### POST /api/ingest/url
+
+Queues URL ingestion and returns a durable task id.
+
+**Request:**
+
+```json
+{
+  "url": "https://www.irs.gov/publications/p17",
+  "use_cache": true
+}
+```
+
+**Response:**
+
+```json
+{
+  "task_id": "a1b2c3d4",
+  "status": "queued"
+}
+```
+
+### POST /api/ingest/file
+
+Uploads a file and queues ingestion.
+
+**Request:** multipart form with `file`.
+
+**Response:**
+
+```json
+{
+  "task_id": "a1b2c3d4",
+  "status": "queued",
+  "filename": "example.pdf"
+}
+```
+
+### POST /api/ingest/corpus
+
+Queues full corpus ingestion.
+
+**Response:**
+
+```json
+{
+  "task_id": "a1b2c3d4",
+  "status": "queued"
+}
+```
+
+### GET /api/ingest/tasks
+
+Lists ingestion tasks ordered by newest first.
+
+### GET /api/ingest/tasks/{task_id}
+
+Returns one task with persisted logs and stats.
+
+**Task response shape:**
+
+```json
+{
+  "task_id": "a1b2c3d4",
+  "status": "running",
+  "url": "https://www.irs.gov/publications/p17",
+  "stats": {
+    "parents": 12,
+    "children": 76,
+    "title": "Publication 17",
+    "document_type": "narrative"
+  },
+  "error": null,
+  "logs": [
+    "Queued",
+    "Worker web-inline picked up job.",
+    "Crawling https://www.irs.gov/publications/p17..."
+  ]
+}
+```
 
 ---
 

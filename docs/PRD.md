@@ -1,6 +1,6 @@
 # Product Requirements Document: Ovidius Doc QA
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Author:** Syam Metta
 **Date:** 2026-05-06
 **Status:** Implementation
@@ -47,6 +47,9 @@ Build a production-grade documentation QA system that demonstrates three core co
 | ING-8 | Preserve metadata: source URL, title, section, document type, parent-child linkage, token count | P0 |
 | ING-9 | Use Anthropic prompt caching during contextualization for cost efficiency | P0 |
 | ING-10 | Support incremental re-ingestion without full re-index | P1 |
+| ING-11 | Queue-backed ingestion jobs persisted in Postgres (`ingestion_jobs`, `ingestion_job_logs`) | P0 |
+| ING-12 | Worker process consumes queued ingestion jobs independent of dashboard/web process lifecycle | P0 |
+| ING-13 | Optional Redis queue signaling for low-latency worker wake-up; Postgres remains source of truth | P1 |
 
 ### 4.2 Retrieval
 
@@ -132,6 +135,9 @@ Build a production-grade documentation QA system that demonstrates three core co
 | DSH-5 | Eval metrics panel: running averages for faithfulness and recall | P0 |
 | DSH-6 | Query log: accumulating history with per-query scores and latency | P0 |
 | DSH-7 | System status indicators: API health, DB connectivity, doc count | P1 |
+| DSH-8 | Access-gated demo landing page (`/demo-access`) with access code and secure cookie-based dashboard access | P0 |
+| DSH-9 | Ask page includes right-side insights panel (pipeline, confidence, trace waterfall, recent searches) | P0 |
+| DSH-10 | WebSocket QA session id persists across reloads; recent searches scoped by persisted session | P0 |
 
 ## 5. Non-Functional Requirements
 
@@ -141,8 +147,8 @@ Build a production-grade documentation QA system that demonstrates three core co
 | NFR-2 | Retrieval latency (embed + search + rerank) | < 1.5s (p95) |
 | NFR-3 | Concurrent user support | 10+ simultaneous queries |
 | NFR-4 | Database connection pooling | 2-10 connections |
-| NFR-5 | Zero external dependencies beyond Railway + Anthropic + Voyage APIs | Required |
-| NFR-6 | Deployable via single `railway up` | Required |
+| NFR-5 | Durable ingestion execution across page navigation/redeploy | Required |
+| NFR-6 | Deployable on Railway with web + worker services (Redis optional) | Required |
 
 ## 6. Documentation Corpus
 
@@ -175,21 +181,22 @@ This corpus is intentionally narrow. A small, well-chosen corpus makes retrieval
 
 | Feature | Why deferred |
 |---------|-------------|
-| Authentication / API keys | Demo system — adds setup friction, no security benefit for public docs |
+| Full user auth system (OIDC/users/roles) | Access-code demo gate is sufficient for reviewer access at this stage |
 | Multi-tenancy | Single-corpus demo — architecture supports it but implementing it is premature |
 | Rate limiting | Low-traffic demo — note in README as production requirement |
-| Streaming responses | Adds complexity to citation tracking — would implement via SSE in production |
+| Fully streamed token-by-token answer rendering across all surfaces | Implemented for WS path; full parity for every path deferred |
 | Fine-tuned embeddings | Voyage-3 is strong baseline — would benchmark against fine-tuned if retrieval metrics underperform |
-| Hybrid search (BM25) | pgvector alone should handle the corpus scale — noted as P2 for exact-match edge cases |
+| Multi-region worker orchestration | Single-region queue/worker on Railway is sufficient for current load |
 
 ## 9. Technical Constraints
 
 - **Python 3.11+** — explicitly requested in the brief
 - **FastAPI** — explicitly requested in the brief
 - **Postgres + pgvector** — production-standard vector store, same-network deployment on Railway
+- **Postgres queue tables + optional Redis** — durable ingestion job orchestration
 - **Anthropic SDK** — generation and agent orchestration
 - **Voyage AI** — embeddings (Anthropic-recommended provider)
-- **No frontend framework** — vanilla HTML/CSS/JS served as static files, minimizes build complexity
+- **React dashboard** — interactive pipeline/trace/session UX
 
 ## 10. Risks and Mitigations
 
