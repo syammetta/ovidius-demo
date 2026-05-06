@@ -103,7 +103,7 @@ class TestIngestionFlow:
 
             mock_embed.return_value = [[0.1] * 1024] * len(contextualized)
             conn = AsyncMock()
-            pool = AsyncMock()
+            pool = MagicMock()
             pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
             pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_pool.return_value = pool

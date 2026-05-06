@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     retrieval_top_n: int = 20
     rerank_top_k: int = 5
 
+    otel_service_name: str = "ovidius-doc-qa"
+    otel_exporter_endpoint: str = ""
+    otel_trace_sample_rate: float = 1.0
+    traces_max_in_memory: int = 500
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

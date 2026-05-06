@@ -139,7 +139,7 @@ class TestHealthEndpoint:
         with patch("app.api.routes.get_pool", new_callable=AsyncMock) as mock_pool:
             conn = AsyncMock()
             conn.fetchval = AsyncMock(side_effect=[142, 30])
-            pool = AsyncMock()
+            pool = MagicMock()
             pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
             pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_pool.return_value = pool

@@ -1,5 +1,10 @@
 """Shared fixtures and mocks for all tests."""
 
+import os
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+os.environ.setdefault("VOYAGE_API_KEY", "test-key")
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -206,7 +211,7 @@ SAMPLE_EMPTY_HTML = """
 """
 
 SAMPLE_MALFORMED_HTML = """
-<html><head><title>Broken
+<html><head><title>Broken</title></head>
 <body>
 <p>Some content without proper closing tags
 <div>Nested <span>unclosed
@@ -267,14 +272,16 @@ def mock_voyage():
 
 @pytest.fixture
 def mock_db_pool():
-    """Mock the asyncpg connection pool."""
-    with patch("app.db.get_pool") as mock_get:
-        pool = AsyncMock()
-        conn = AsyncMock()
-        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
-        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_get.return_value = pool
-        yield conn
+    """Mock the asyncpg connection pool by injecting into app.db._pool."""
+    import app.db
+    conn = AsyncMock()
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    original = app.db._pool
+    app.db._pool = pool
+    yield conn
+    app.db._pool = original
 
 
 @pytest.fixture

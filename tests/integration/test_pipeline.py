@@ -37,6 +37,7 @@ def mock_full_pipeline():
     """Mock all external dependencies for the full pipeline."""
     with patch("app.retrieval.vector_store.embed_texts", new_callable=AsyncMock) as mock_embed, \
          patch("app.retrieval.vector_store.get_pool", new_callable=AsyncMock) as mock_pool, \
+         patch("app.retrieval.hybrid_search.bm25_search", new_callable=AsyncMock) as mock_bm25, \
          patch("app.retrieval.reranker._get_ranker") as mock_ranker, \
          patch("app.retrieval.corrective.anthropic.Anthropic") as mock_anthropic, \
          patch("app.retrieval.context_builder._fetch_parents", new_callable=AsyncMock) as mock_parents:
@@ -47,10 +48,13 @@ def mock_full_pipeline():
         # DB connection for vector search
         conn = AsyncMock()
         conn.fetch.return_value = _make_db_rows(5)
-        pool = AsyncMock()
+        pool = MagicMock()
         pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
         pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_pool.return_value = pool
+
+        # BM25 returns empty (vector search provides results)
+        mock_bm25.return_value = []
 
         # FlashRank reranker
         ranker = MagicMock()

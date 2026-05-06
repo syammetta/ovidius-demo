@@ -30,16 +30,20 @@ class TestReranker:
 
     @pytest.mark.asyncio
     async def test_scores_updated(self, mock_flashrank):
-        chunks = [make_chunk(chunk_id="c0", score=0.5)]
-        mock_flashrank.rerank.return_value = [{"id": "c0", "score": 0.95}]
+        chunks = [make_chunk(chunk_id=f"c{i}", score=0.5) for i in range(6)]
+        mock_flashrank.rerank.return_value = [{"id": "c0", "score": 0.95}] + [
+            {"id": f"c{i}", "score": 0.9 - i * 0.1} for i in range(1, 6)
+        ]
 
         result = await rerank("test query", chunks, top_k=5)
         assert result[0].score == 0.95
 
     @pytest.mark.asyncio
     async def test_retrieval_method_appended(self, mock_flashrank):
-        chunks = [make_chunk(chunk_id="c0", retrieval_method="hybrid_rrf")]
-        mock_flashrank.rerank.return_value = [{"id": "c0", "score": 0.9}]
+        chunks = [make_chunk(chunk_id=f"c{i}", retrieval_method="hybrid_rrf") for i in range(6)]
+        mock_flashrank.rerank.return_value = [
+            {"id": f"c{i}", "score": 0.9 - i * 0.1} for i in range(6)
+        ]
 
         result = await rerank("test query", chunks, top_k=5)
         assert "rerank" in result[0].retrieval_method
@@ -50,8 +54,10 @@ class TestReranker:
             chunk_id="c0",
             content="raw content",
             contextual_content="contextual content with more info",
-        )]
-        mock_flashrank.rerank.return_value = [{"id": "c0", "score": 0.9}]
+        )] + [make_chunk(chunk_id=f"c{i}") for i in range(1, 6)]
+        mock_flashrank.rerank.return_value = [
+            {"id": f"c{i}", "score": 0.9 - i * 0.1} for i in range(6)
+        ]
 
         await rerank("test query", chunks, top_k=5)
         call_args = mock_flashrank.rerank.call_args

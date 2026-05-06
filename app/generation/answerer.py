@@ -5,6 +5,7 @@ Uses parent chunks (larger context) for generation while citing child chunks
 corrective RAG confidence level.
 """
 
+import asyncio
 from dataclasses import dataclass
 
 import anthropic
@@ -12,6 +13,7 @@ import anthropic
 from app.config import settings
 from app.retrieval.context_builder import RetrievalResult
 from app.retrieval.corrective import RetrievalConfidence
+from app.telemetry import get_tracer, record_generation_latency
 
 SYSTEM_PROMPT = """You are a documentation assistant. Answer the user's question using ONLY the provided context passages.
 
@@ -49,6 +51,7 @@ class AnswerResult:
 
 async def generate_answer(question: str, retrieval: RetrievalResult) -> AnswerResult:
     """Generate a cited answer using parent chunks for context and child chunks for citations."""
+    tracer = get_tracer("generation")
 
     children = retrieval.children
     parent_contents = retrieval.parent_contents
@@ -78,16 +81,31 @@ async def generate_answer(question: str, retrieval: RetrievalResult) -> AnswerRe
     if confidence == RetrievalConfidence.LOW_CONFIDENCE:
         system += LOW_CONFIDENCE_ADDENDUM
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    response = client.messages.create(
-        model=settings.generation_model,
-        max_tokens=1024,
-        system=system,
-        messages=[{
-            "role": "user",
-            "content": f"Context:\n{context}\n\nQuestion: {question}",
-        }],
-    )
+    with tracer.start_as_current_span("generate_answer") as span:
+        span.set_attribute("model", settings.generation_model)
+        span.set_attribute("confidence", confidence.value)
+        span.set_attribute("chunks_used", len(children))
+        span.set_attribute("parent_chunks_used", len(seen_parents))
+        span.set_attribute("context_length", len(context))
+
+        import time
+        t0 = time.perf_counter()
+
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        response = await asyncio.to_thread(
+            client.messages.create,
+            model=settings.generation_model,
+            max_tokens=1024,
+            system=system,
+            messages=[{
+                "role": "user",
+                "content": f"Context:\n{context}\n\nQuestion: {question}",
+            }],
+        )
+
+        gen_ms = round((time.perf_counter() - t0) * 1000, 1)
+        span.set_attribute("generation_ms", gen_ms)
+        record_generation_latency(gen_ms)
 
     answer_text = response.content[0].text
 

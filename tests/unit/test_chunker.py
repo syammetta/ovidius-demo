@@ -213,8 +213,9 @@ class TestChunkDocument:
 
 class TestNarrativeChunking:
     def test_splits_on_headings(self):
-        content = "## Filing Status\n\nYour filing status determines your tax rate. " * 10
-        content += "\n\n## Dependents\n\nYou may claim dependents. " * 10
+        section_a = "## Filing Status\n\n" + "Your filing status determines your tax rate and bracket. You must choose from single, married filing jointly, married filing separately, head of household, or qualifying surviving spouse. " * 5
+        section_b = "\n\n## Dependents\n\n" + "You may claim dependents if they meet certain qualifying tests including relationship, age, residency, and support requirements as outlined by the IRS in publication 501. " * 5
+        content = section_a + section_b
         parents, children = chunk_narrative(content)
         assert len(parents) >= 2
 
@@ -227,12 +228,14 @@ class TestNarrativeChunking:
 
 class TestApiReferenceChunking:
     def test_splits_on_sections(self):
-        content = "## GET /endpoint\n\nDescription.\n\n## POST /other\n\nAnother endpoint."
+        section_a = "## GET /endpoint\n\nThis endpoint retrieves the tax calculation for a given filing status and income level. It accepts query parameters for filing status and gross income and returns the computed federal tax amount along with the effective and marginal rates."
+        section_b = "\n\n## POST /other\n\nThis endpoint submits a new tax return for processing. It accepts a JSON body with all required W-2 and 1099 information and returns a confirmation ID along with the estimated refund or amount owed."
+        content = section_a + section_b
         parents, children = chunk_api_reference(content)
         assert len(parents) >= 2
 
     def test_code_blocks_preserved(self):
-        content = "## Endpoint\n\n```json\n{\"key\": \"value\"}\n```\n\nDescription text."
+        content = "## Endpoint\n\nThis endpoint returns the tax calculation result as a JSON object with the following structure for all supported filing statuses.\n\n```json\n{\"key\": \"value\", \"tax_owed\": 12500, \"effective_rate\": 0.167}\n```\n\nThe response includes the computed tax owed, effective rate, and marginal bracket information."
         parents, children = chunk_api_reference(content)
         found_code = any("```" in c for c in children)
         assert found_code or any("{\"key\"" in c for c in children)
