@@ -495,6 +495,9 @@ async def _run_file_job(job: dict[str, Any]) -> dict[str, Any]:
 async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
     from scripts.ingest import IRS_INSTRUCTIONS, IRS_PUBLICATIONS, IRS_TAX_TOPICS
 
+    payload = job.get("payload") or {}
+    use_cache = bool(payload.get("use_cache", True))
+
     progress = job.get("progress") or {}
     corpus_progress = progress.get("corpus_progress") or {}
     resume_index = int(corpus_progress.get("next_index", 0))
@@ -539,7 +542,7 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
     for idx, url in enumerate(all_urls):
         await append_job_log(job["job_id"], f"Crawling [{idx + 1}/{total_docs}] {url}")
         try:
-            doc = await crawl_url(url, use_cache=True)
+            doc = await crawl_url(url, use_cache=use_cache)
             source_hash = canonical_source_hash(doc.content)
             prev_state = await get_source_state(doc.url) if _should_skip_unchanged(job) else None
             if prev_state and prev_state.get("source_hash") == source_hash:
@@ -574,13 +577,10 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
         await append_job_log(
             job["job_id"],
             (
-                f"Resuming corpus ingest from checkpoint {min(resume_index + 1, total_docs)}/{total_docs}; "
-                "source-hash dedup will decide what still needs processing."
+                f"Resuming corpus ingest from checkpoint {min(resume_index + 1, len(all_docs) or total_docs)}/"
+                f"{len(all_docs) or total_docs}."
             ),
         )
-        # Resume index was based on a previous ordered crawl list.
-        # Source-hash dedup is now the canonical resume mechanism.
-        resume_index = 0
 
     await append_job_log(job["job_id"], f"Processing {len(all_docs)} crawled docs...")
 
@@ -590,6 +590,8 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
         if fresh_progress.get("pause_requested"):
             await append_job_log(job["job_id"], "Pause requested. Checkpoint saved; job paused.")
             raise PauseRequested()
+        if idx < resume_index:
+            continue
 
         await append_job_log(job["job_id"], f"Processing [{idx + 1}/{len(all_docs)}] {doc.title[:90]}")
         stats = await _process_document(

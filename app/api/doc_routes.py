@@ -21,6 +21,10 @@ class IngestRequest(BaseModel):
     dedup_mode: Literal["skip", "force_reingest"] = "skip"
 
 
+class CleanupIngestTasksRequest(BaseModel):
+    statuses: list[Literal["queued", "running", "paused", "failed"]] | None = None
+
+
 @router.get("/documents")
 async def list_documents(limit: int = 100, offset: int = 0):
     pool = await get_pool()
@@ -185,6 +189,51 @@ async def resume_ingest_task(task_id: str):
     }
 
 
+@router.post("/ingest/tasks/cleanup")
+async def cleanup_ingest_tasks(req: CleanupIngestTasksRequest | None = None):
+    statuses = req.statuses if req and req.statuses else ["queued", "running", "paused", "failed"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT job_id
+               FROM ingestion_jobs
+               WHERE status = ANY($1::text[])""",
+            statuses,
+        )
+        job_ids = [r["job_id"] for r in rows]
+        if not job_ids:
+            return {"deleted": 0, "statuses": statuses}
+        await conn.execute(
+            "DELETE FROM ingestion_job_logs WHERE job_id = ANY($1::text[])",
+            job_ids,
+        )
+        await conn.execute(
+            "DELETE FROM ingestion_jobs WHERE job_id = ANY($1::text[])",
+            job_ids,
+        )
+    return {"deleted": len(job_ids), "statuses": statuses}
+
+
+@router.post("/ingest/tasks/bootstrap-source-state")
+async def bootstrap_source_ingest_state():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS source_ingest_state (
+                   source_url TEXT PRIMARY KEY,
+                   source_hash TEXT NOT NULL,
+                   last_parent_count INTEGER NOT NULL DEFAULT 0,
+                   last_child_count INTEGER NOT NULL DEFAULT 0,
+                   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+               )"""
+        )
+        await conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_source_ingest_state_updated_at
+               ON source_ingest_state (updated_at DESC)"""
+        )
+    return {"status": "ok", "table": "source_ingest_state"}
+
+
 def _extract_text_from_pdf(data: bytes) -> str:
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(data))
@@ -197,11 +246,14 @@ def _extract_text_from_pdf(data: bytes) -> str:
 
 
 @router.post("/ingest/corpus")
-async def ingest_corpus(dedup_mode: Literal["skip", "force_reingest"] = "skip"):
+async def ingest_corpus(
+    dedup_mode: Literal["skip", "force_reingest"] = "skip",
+    use_cache: bool = True,
+):
     task_id = await enqueue_job(
         job_type="corpus",
         source="corpus://irs-full",
-        payload={"dedup_mode": dedup_mode},
+        payload={"dedup_mode": dedup_mode, "use_cache": use_cache},
     )
     if settings.ingestion_inline_worker:
         asyncio.create_task(process_job_by_id(task_id, worker_id="web-inline"))
