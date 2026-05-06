@@ -247,14 +247,15 @@ async def run_eval_persisted(run_id: str):
                     async with pool.acquire() as conn:
                         await conn.execute(
                             """UPDATE eval_results
-                               SET metrics = metrics || $1
+                               SET metrics = metrics || $1::jsonb
                                WHERE run_id = $2 AND pair_id = $3""",
                             json.dumps(result["ragas"]),
                             run_id,
                             result["id"],
                         )
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("RAGAS eval failed: %s", e)
 
         summary = _compute_summary(pipeline_results)
 

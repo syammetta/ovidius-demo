@@ -1,6 +1,5 @@
 """Evaluation API — trigger runs, fetch results, view history."""
 
-import json
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException

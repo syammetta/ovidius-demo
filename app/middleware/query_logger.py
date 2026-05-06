@@ -6,10 +6,13 @@ OpenTelemetry context if not provided.
 """
 
 import json
+import logging
 from dataclasses import dataclass, field
 
 from app.db import get_pool
 from app.telemetry import get_current_trace_id
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,4 +64,4 @@ async def log_query(entry: QueryLogEntry) -> None:
                 entry.interface,
             )
     except Exception:
-        pass
+        logger.warning("Failed to log query", exc_info=True)

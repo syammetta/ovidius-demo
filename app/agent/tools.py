@@ -9,7 +9,6 @@ import time
 
 from app.db import get_pool
 from app.retrieval.context_builder import retrieve
-from app.retrieval.vector_store import RetrievedChunk
 from app.telemetry import get_tracer
 
 
@@ -403,7 +402,7 @@ _HANDLERS = {
     "search_knowledge_base": _handle_search,
     "get_document_section": _handle_get_section,
     "compare_sources": _handle_compare,
-    "calculate_tax": lambda data: _handle_calculate(data),
+    "calculate_tax": _handle_calculate,
 }
 
 
@@ -431,14 +430,11 @@ async def handle_tool_call(
 
         t0 = time.perf_counter()
 
-        if callable(handler) and not hasattr(handler, "__self__"):
-            import asyncio
-            if asyncio.iscoroutinefunction(handler):
-                result = await handler(input_data)
-            else:
-                result = handler(input_data)
-        else:
+        import asyncio
+        if asyncio.iscoroutinefunction(handler):
             result = await handler(input_data)
+        else:
+            result = handler(input_data)
 
         elapsed = round((time.perf_counter() - t0) * 1000, 1)
         span.set_attribute("tool.duration_ms", elapsed)

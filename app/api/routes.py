@@ -240,4 +240,7 @@ async def get_query_logs(
 
 @app.get("/")
 async def dashboard():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    index = STATIC_DIR / "index.html"
+    if not index.exists():
+        return {"status": "ok", "message": "Ovidius Doc QA API. Dashboard not yet built."}
+    return FileResponse(str(index))

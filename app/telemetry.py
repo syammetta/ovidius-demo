@@ -19,11 +19,10 @@ For async functions, use the @traced decorator:
 
 import functools
 import json
+import logging
 import threading
-import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Sequence
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider, ReadableSpan
@@ -37,9 +36,10 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.trace import StatusCode, format_trace_id, format_span_id
-from opentelemetry.trace.propagation import set_span_in_context
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ class InMemorySpanCollector(SpanExporter):
             trace_ids.reverse()
             result = []
             for tid in trace_ids:
-                spans = self._traces.get(tid, [])
+                spans = list(self._traces.get(tid, []))
                 root = _find_root_span(spans)
                 result.append({
                     "trace_id": tid,
@@ -134,6 +134,7 @@ class InMemorySpanCollector(SpanExporter):
             spans = self._traces.get(trace_id)
             if spans is None:
                 return None
+            spans = list(spans)
             root = _find_root_span(spans)
             return {
                 "trace_id": trace_id,
@@ -430,21 +431,26 @@ async def flush_traces_to_db(pool) -> int:
         return 0
 
     count = 0
-    async with pool.acquire() as conn:
-        for t in traces:
-            await conn.execute(
-                """INSERT INTO traces (trace_id, spans, root_name, span_count, duration_ms, status)
-                   VALUES ($1, $2, $3, $4, $5, $6)
-                   ON CONFLICT (trace_id) DO UPDATE SET
-                       spans = EXCLUDED.spans,
-                       span_count = EXCLUDED.span_count,
-                       duration_ms = EXCLUDED.duration_ms""",
-                t["trace_id"],
-                json.dumps(t["spans"]),
-                t.get("root_name"),
-                t["span_count"],
-                t.get("duration_ms"),
-                t.get("status"),
-            )
-            count += 1
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for t in traces:
+                    await conn.execute(
+                        """INSERT INTO traces (trace_id, spans, root_name, span_count, duration_ms, status)
+                           VALUES ($1, $2, $3, $4, $5, $6)
+                           ON CONFLICT (trace_id) DO UPDATE SET
+                               spans = EXCLUDED.spans,
+                               span_count = EXCLUDED.span_count,
+                               duration_ms = EXCLUDED.duration_ms""",
+                        t["trace_id"],
+                        json.dumps(t["spans"]),
+                        t.get("root_name"),
+                        t["span_count"],
+                        t.get("duration_ms"),
+                        t.get("status"),
+                    )
+                    count += 1
+    except Exception:
+        logger.warning("Failed to flush traces to DB", exc_info=True)
+        return 0
     return count

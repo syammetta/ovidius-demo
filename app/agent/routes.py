@@ -60,13 +60,7 @@ class ChatResponse(BaseModel):
 
 def _build_api_messages(messages: list[Message]) -> list[dict]:
     """Convert session messages to Anthropic API format."""
-    api_msgs = []
-    for m in messages:
-        if isinstance(m.content, str):
-            api_msgs.append({"role": m.role, "content": m.content})
-        else:
-            api_msgs.append({"role": m.role, "content": m.content})
-    return api_msgs
+    return [{"role": m.role, "content": m.content} for m in messages]
 
 
 async def _summarize_if_needed(
@@ -86,7 +80,8 @@ async def _summarize_if_needed(
     )
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    resp = client.messages.create(
+    resp = await asyncio.to_thread(
+        client.messages.create,
         model="claude-haiku-4-5-20251001",
         max_tokens=512,
         messages=[{
@@ -311,12 +306,14 @@ async def chat_stream(req: ChatRequest):
                     create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": MAX_THINKING_BUDGET}
 
                 tool_calls_info = []
+                tool_cache = ToolCache()
                 turn_count = 0
 
                 response = await asyncio.to_thread(client.messages.create, **create_kwargs)
                 turn_count += 1
 
                 while response.stop_reason == "tool_use" and turn_count <= MAX_TOOL_TURNS:
+                    tool_results = []
                     for block in response.content:
                         if getattr(block, "type", None) == "thinking":
                             yield _sse("thinking", {"text": block.thinking})
@@ -327,7 +324,7 @@ async def chat_stream(req: ChatRequest):
                             })
 
                             t_tool = time.perf_counter()
-                            result = await handle_tool_call(block.name, block.input)
+                            result = await handle_tool_call(block.name, block.input, cache=tool_cache)
                             tool_ms = round((time.perf_counter() - t_tool) * 1000, 1)
 
                             tool_calls_info.append(ToolCallInfo(
@@ -336,6 +333,11 @@ async def chat_stream(req: ChatRequest):
                                 result_preview=result[:300],
                                 duration_ms=tool_ms,
                             ))
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": result,
+                            })
                             yield _sse("tool_result", {
                                 "tool_name": block.name,
                                 "result_preview": result[:500],
@@ -343,13 +345,7 @@ async def chat_stream(req: ChatRequest):
                             })
 
                     api_messages.append({"role": "assistant", "content": response.content})
-                    api_messages.append({"role": "user", "content": [
-                        {"type": "tool_result", "tool_use_id": b.id, "content": tc.result_preview}
-                        for b, tc in zip(
-                            [b for b in response.content if b.type == "tool_use"],
-                            tool_calls_info[-len([b for b in response.content if b.type == "tool_use"]):],
-                        )
-                    ]})
+                    api_messages.append({"role": "user", "content": tool_results})
 
                     response = await asyncio.to_thread(
                         client.messages.create,
@@ -392,8 +388,8 @@ async def chat_stream(req: ChatRequest):
                     interface="agent_stream",
                 )))
 
-            except Exception as e:
-                yield _sse("error", {"message": str(e)})
+            except Exception:
+                yield _sse("error", {"message": "An internal error occurred. Please try again."})
 
     return StreamingResponse(
         event_generator(),

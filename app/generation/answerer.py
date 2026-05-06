@@ -6,6 +6,7 @@ corrective RAG confidence level.
 """
 
 import asyncio
+import time
 from dataclasses import dataclass
 
 import anthropic
@@ -88,7 +89,6 @@ async def generate_answer(question: str, retrieval: RetrievalResult) -> AnswerRe
         span.set_attribute("parent_chunks_used", len(seen_parents))
         span.set_attribute("context_length", len(context))
 
-        import time
         t0 = time.perf_counter()
 
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)

@@ -11,10 +11,14 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+import logging
+
 from app.retrieval.context_builder import retrieve
 from app.generation.answerer import generate_answer
 from app.telemetry import get_tracer, get_current_trace_id
 from app.middleware.query_logger import log_query, QueryLogEntry
+
+logger = logging.getLogger(__name__)
 
 server = Server("ovidius-doc-qa")
 
@@ -134,7 +138,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     interface="mcp",
                 ))
             except Exception:
-                pass
+                logger.warning("Failed to log MCP query", exc_info=True)
 
             return [TextContent(type="text", text=text)]
 
