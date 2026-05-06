@@ -11,20 +11,20 @@ RUN npm run build
 FROM python:3.11-slim
 
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
-
 COPY app/ ./app/
 COPY eval/ ./eval/
 COPY migrations/ ./migrations/
 COPY scripts/ ./scripts/
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir .
 COPY --from=frontend /build/static ./static
 
 EXPOSE 8000
 
-CMD uvicorn app.api.routes:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["sh", "-c", "uvicorn app.api.routes:app --host 0.0.0.0 --port ${PORT:-8000}"]

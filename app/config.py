@@ -2,9 +2,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str
-    voyage_api_key: str
-    database_url: str
+    anthropic_api_key: str = ""
+    voyage_api_key: str = ""
+    database_url: str = ""
 
     cloudflare_api_key: str = ""
     r2_account_id: str = ""

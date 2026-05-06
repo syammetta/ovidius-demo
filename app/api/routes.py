@@ -29,7 +29,12 @@ from app.middleware.query_logger import log_query, QueryLogEntry
 async def lifespan(app: FastAPI):
     collector = setup_telemetry()
     app.state.trace_collector = collector
-    await get_pool()
+    app.state.startup_db_error = ""
+    try:
+        await get_pool()
+    except Exception as exc:
+        # Keep API booting so platform healthchecks can still reach /health.
+        app.state.startup_db_error = str(exc)
     yield
     await close_pool()
 
@@ -164,13 +169,20 @@ async def health():
         async with pool.acquire() as conn:
             child_count = await conn.fetchval("SELECT count(*) FROM documents")
             parent_count = await conn.fetchval("SELECT count(*) FROM parent_chunks")
+        startup_db_error = getattr(app.state, "startup_db_error", "")
         return {
-            "status": "ok",
+            "status": "ok" if not startup_db_error else "degraded",
             "child_chunks": child_count,
             "parent_chunks": parent_count,
+            "startup_db_error": startup_db_error,
         }
-    except Exception:
-        return {"status": "ok", "child_chunks": 0, "parent_chunks": 0}
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "child_chunks": 0,
+            "parent_chunks": 0,
+            "startup_db_error": str(exc),
+        }
 
 
 # ---------------------------------------------------------------------------

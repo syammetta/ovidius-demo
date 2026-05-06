@@ -24,6 +24,8 @@ def _ssl_context():
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
+        if not settings.database_url:
+            raise RuntimeError("DATABASE_URL is not configured")
         ssl_ctx = _ssl_context()
         kwargs = {}
         if ssl_ctx:
