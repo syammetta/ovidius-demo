@@ -16,6 +16,7 @@ from app.retrieval.context_builder import retrieve
 from app.generation.answerer import generate_answer
 from app.agent.routes import router as agent_router
 from app.api.eval_routes import router as eval_router
+from app.ws.routes import router as ws_router
 from app.telemetry import (
     setup_telemetry, get_tracer, get_current_trace_id,
     get_collector, get_metrics_snapshot,
@@ -36,10 +37,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Ovidius Doc QA", version="0.1.0", lifespan=lifespan)
 app.include_router(agent_router)
 app.include_router(eval_router)
+app.include_router(ws_router)
 
 STATIC_DIR = Path(__file__).parent.parent.parent / "static"
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+ASSETS_DIR = STATIC_DIR / "assets"
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 
 # ---------------------------------------------------------------------------
