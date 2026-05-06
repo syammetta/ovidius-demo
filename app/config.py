@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     redis_url: str = ""
     ingestion_inline_worker: bool = True
     ingestion_worker_poll_ms: int = 2000
+    ingestion_stale_after_seconds: int = 180
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

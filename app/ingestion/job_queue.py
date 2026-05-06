@@ -7,22 +7,12 @@ import uuid
 from typing import Any
 
 import asyncpg
-from redis import asyncio as redis
 
 from app.config import settings
 from app.db import get_pool
+from app.cache import get_client as get_redis_client
 
 QUEUE_KEY = "ovidius:ingestion:queue"
-_redis_client: redis.Redis | None = None
-
-
-async def get_redis_client() -> redis.Redis | None:
-    global _redis_client
-    if not settings.redis_url:
-        return None
-    if _redis_client is None:
-        _redis_client = redis.from_url(settings.redis_url, decode_responses=True)
-    return _redis_client
 
 
 def _row_to_job(row: asyncpg.Record) -> dict[str, Any]:
@@ -231,3 +221,23 @@ async def pop_job_id(timeout_seconds: int = 5) -> str | None:
         return job_id
     except Exception:
         return None
+
+
+async def recover_stale_running_jobs(stale_after_seconds: int) -> list[str]:
+    """Requeue jobs that were left in running state by interrupted workers."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """UPDATE ingestion_jobs
+               SET status = 'queued',
+                   claimed_by = NULL,
+                   claimed_at = NULL,
+                   updated_at = now()
+               WHERE status = 'running'
+                 AND claimed_at IS NOT NULL
+                 AND claimed_at < now() - make_interval(secs => $1)
+                 AND attempts < max_attempts
+               RETURNING job_id""",
+            stale_after_seconds,
+        )
+    return [r["job_id"] for r in rows]

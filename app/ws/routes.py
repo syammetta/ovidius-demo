@@ -18,6 +18,7 @@ from app.agent.session import Message, create_session, load_session, save_sessio
 from app.retrieval.context_builder import retrieve, ProgressCallback
 from app.generation.answerer import SYSTEM_PROMPT, LOW_CONFIDENCE_ADDENDUM
 from app.retrieval.corrective import RetrievalConfidence
+from app.cache import get_cached_response, cache_response
 from app.telemetry import (
     get_tracer, get_current_trace_id, get_collector,
     record_request_latency,
@@ -94,6 +95,32 @@ async def _handle_direct_mode(ws: WebSocket, question: str, session_id: str | No
         span.set_attribute("session_id", session.session_id)
 
         await ws.send_json({"type": "start", "trace_id": trace_id, "session_id": session.session_id})
+
+        # Response cache — return instantly for repeated questions
+        cached = await get_cached_response(question)
+        if cached:
+            span.set_attribute("cache_hit", True)
+            await ws.send_json({"type": "text_delta", "text": cached["answer"]})
+            cached_ms = round((time.perf_counter() - t_start) * 1000, 1)
+            await ws.send_json({
+                "type": "done",
+                "answer": cached["answer"],
+                "citations": cached.get("citations", []),
+                "confidence": cached.get("confidence", ""),
+                "retrieval_method": cached.get("retrieval_method", "cache"),
+                "chunks_used": cached.get("chunks_used", 0),
+                "parent_chunks_used": cached.get("parent_chunks_used", 0),
+                "trace_id": trace_id,
+                "total_ms": cached_ms,
+                "retrieval_ms": 0,
+                "generation_ms": 0,
+                "session_id": session.session_id,
+                "cache_hit": True,
+            })
+            session.messages.append(Message(role="assistant", content=cached["answer"]))
+            await save_session(session)
+            record_request_latency(cached_ms, interface="ws")
+            return
 
         # Retrieval with live stage events
         retrieval_result = await retrieve(question, on_progress=progress)
@@ -226,6 +253,15 @@ async def _handle_direct_mode(ws: WebSocket, question: str, session_id: str | No
 
         session.messages.append(Message(role="assistant", content=full_text))
         await save_session(session)
+
+        await cache_response(question, {
+            "answer": full_text,
+            "citations": citations,
+            "confidence": confidence.value,
+            "retrieval_method": "+".join({c.retrieval_method for c in children}),
+            "chunks_used": len(children),
+            "parent_chunks_used": len(seen_parents),
+        })
 
         try:
             await log_query(QueryLogEntry(

@@ -1,25 +1,48 @@
-"""Embed contextualized chunks and store parent-child structure in Postgres pgvector."""
+"""Embed contextualized chunks and store parent-child structure in Postgres pgvector.
+
+Embedding calls go through a Redis cache layer — identical texts skip the
+Voyage API entirely. This helps at query time (same query = instant embedding)
+and during re-ingestion (unchanged chunks skip the API call).
+"""
 
 import numpy as np
 import voyageai
 
 from app.config import settings
 from app.db import get_pool
+from app.cache import get_cached_embeddings, cache_embeddings
 from app.ingestion.chunker import ParentChunk, ChildChunk
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Generate embeddings via Voyage AI, batching to respect API limits."""
+    """Generate embeddings via Voyage AI with Redis caching."""
+    if not texts:
+        return []
+
+    cached = await get_cached_embeddings(texts)
+
+    if len(cached) == len(texts):
+        return [cached[i] for i in range(len(texts))]
+
+    miss_indices = [i for i in range(len(texts)) if i not in cached]
+    miss_texts = [texts[i] for i in miss_indices]
+
     client = voyageai.Client(api_key=settings.voyage_api_key)
-    all_embeddings = []
+    fresh_embeddings: list[list[float]] = []
     batch_size = 50
 
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
+    for i in range(0, len(miss_texts), batch_size):
+        batch = miss_texts[i : i + batch_size]
         result = client.embed(batch, model=settings.embedding_model)
-        all_embeddings.extend(result.embeddings)
+        fresh_embeddings.extend(result.embeddings)
 
-    return all_embeddings
+    await cache_embeddings(miss_texts, fresh_embeddings)
+
+    result_map = dict(cached)
+    for idx, emb in zip(miss_indices, fresh_embeddings):
+        result_map[idx] = emb
+
+    return [result_map[i] for i in range(len(texts))]
 
 
 async def store_parents(parents: list[ParentChunk]) -> int:

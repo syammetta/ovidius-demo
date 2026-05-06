@@ -21,6 +21,7 @@ from app.ingestion.job_queue import (
     fail_job,
     get_job,
     pop_job_id,
+    recover_stale_running_jobs,
     update_job_progress,
 )
 
@@ -114,30 +115,38 @@ async def _run_file_job(job: dict[str, Any]) -> dict[str, Any]:
 async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
     from scripts.ingest import IRS_INSTRUCTIONS, IRS_PUBLICATIONS, IRS_TAX_TOPICS
 
-    total_parents = 0
-    total_children = 0
-    pages = 0
+    progress = job.get("progress") or {}
+    corpus_progress = progress.get("corpus_progress") or {}
+    resume_index = int(corpus_progress.get("next_index", 0))
+    total_parents = int(corpus_progress.get("parents", 0))
+    total_children = int(corpus_progress.get("children", 0))
+    pages = int(corpus_progress.get("processed_docs", 0))
 
+    all_docs = []
     for base_url, paths in IRS_PUBLICATIONS.items():
         unique_paths = list(dict.fromkeys(paths))
         await append_job_log(job["job_id"], f"Crawling {len(unique_paths)} IRS publications...")
-        docs = await crawl_docs(base_url, unique_paths, use_cache=True)
-        for doc in docs:
-            stats = await _process_document(
-                job_id=job["job_id"],
-                content=doc.content,
-                source_url=doc.url,
-                source_title=doc.title,
-                section=doc.section,
-            )
-            total_parents += stats["parents"]
-            total_children += stats["children"]
-            pages += 1
+        all_docs.extend(await crawl_docs(base_url, unique_paths, use_cache=True))
 
     unique_topics = list(dict.fromkeys(IRS_TAX_TOPICS))
     await append_job_log(job["job_id"], f"Crawling {len(unique_topics)} tax topics...")
-    docs = await crawl_urls(unique_topics, use_cache=True)
-    for doc in docs:
+    all_docs.extend(await crawl_urls(unique_topics, use_cache=True))
+
+    for base_url, paths in IRS_INSTRUCTIONS.items():
+        unique_paths = list(dict.fromkeys(paths))
+        await append_job_log(job["job_id"], f"Crawling {len(unique_paths)} form instructions...")
+        all_docs.extend(await crawl_docs(base_url, unique_paths, use_cache=True))
+
+    total_docs = len(all_docs)
+    if resume_index > 0:
+        await append_job_log(
+            job["job_id"],
+            f"Resuming corpus ingest at doc {min(resume_index + 1, total_docs)}/{total_docs}.",
+        )
+
+    for idx, doc in enumerate(all_docs):
+        if idx < resume_index:
+            continue
         stats = await _process_document(
             job_id=job["job_id"],
             content=doc.content,
@@ -148,22 +157,18 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
         total_parents += stats["parents"]
         total_children += stats["children"]
         pages += 1
-
-    for base_url, paths in IRS_INSTRUCTIONS.items():
-        unique_paths = list(dict.fromkeys(paths))
-        await append_job_log(job["job_id"], f"Crawling {len(unique_paths)} form instructions...")
-        docs = await crawl_docs(base_url, unique_paths, use_cache=True)
-        for doc in docs:
-            stats = await _process_document(
-                job_id=job["job_id"],
-                content=doc.content,
-                source_url=doc.url,
-                source_title=doc.title,
-                section=doc.section,
-            )
-            total_parents += stats["parents"]
-            total_children += stats["children"]
-            pages += 1
+        await update_job_progress(
+            job["job_id"],
+            {
+                "corpus_progress": {
+                    "next_index": idx + 1,
+                    "processed_docs": pages,
+                    "total_docs": total_docs,
+                    "parents": total_parents,
+                    "children": total_children,
+                }
+            },
+        )
 
     return {
         "parents": total_parents,
@@ -189,6 +194,9 @@ async def process_job(job: dict[str, Any], worker_id: str) -> None:
         await update_job_progress(job_id, {"stats": stats})
         await append_job_log(job_id, "Done.")
         await complete_job(job_id, stats)
+
+        from app.cache import invalidate_responses
+        await invalidate_responses()
     except Exception as exc:
         logger.exception("Ingestion job failed: %s", job_id)
         await append_job_log(job_id, f"Error: {exc}")
@@ -206,6 +214,9 @@ async def process_job_by_id(job_id: str, worker_id: str) -> bool:
 async def run_worker_loop(worker_id: str | None = None) -> None:
     worker_id = worker_id or f"worker-{socket.gethostname()}"
     logger.info("Starting ingestion worker loop as %s", worker_id)
+    recovered = await recover_stale_running_jobs(settings.ingestion_stale_after_seconds)
+    if recovered:
+        logger.info("Recovered %s stale ingestion jobs", len(recovered))
 
     while True:
         job = None

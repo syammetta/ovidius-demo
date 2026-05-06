@@ -17,6 +17,7 @@ export interface MessageData {
   trace?: TraceData | null;
   isStreaming?: boolean;
   retrievalDetail?: RetrievalDetail;
+  cacheHit?: boolean;
 }
 
 export default function ChatMessage({ msg }: { msg: MessageData }) {

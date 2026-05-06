@@ -128,6 +128,7 @@ export default function AskPage() {
           generationMs: typeof d.generation_ms === "number" ? d.generation_ms : m.generationMs,
           chunksUsed: typeof d.chunks_used === "number" ? d.chunks_used : m.chunksUsed,
           trace: (d.trace as MessageData["trace"]) || m.trace,
+          cacheHit: Boolean(d.cache_hit),
         }));
         if (typeof d.session_id === "string") {
           setSessionId(d.session_id);
@@ -230,6 +231,9 @@ export default function AskPage() {
                 </div>
                 <div>
                   Latency: <span className="font-mono">{latestAssistant?.totalMs !== undefined ? `${latestAssistant.totalMs.toFixed(0)}ms` : "—"}</span>
+                  {latestAssistant?.cacheHit && (
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] bg-[var(--green-light)] text-[var(--green)] font-medium">cached</span>
+                  )}
                 </div>
               </div>
             </div>

@@ -1,6 +1,7 @@
 """FastAPI application — QA endpoint, agent, observability, eval, pipeline trace."""
 
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,8 +13,11 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.db import get_pool, close_pool
+from app.ingestion.job_queue import recover_stale_running_jobs
+from app.ingestion.worker import resume_queued_jobs_inline
 from app.retrieval.context_builder import retrieve
 from app.generation.answerer import generate_answer
+from app.cache import get_cached_response, cache_response, get_cache_stats
 from app.agent.routes import router as agent_router
 from app.api.eval_routes import router as eval_router
 from app.api.doc_routes import router as doc_router
@@ -25,6 +29,8 @@ from app.telemetry import (
 )
 from app.middleware.query_logger import log_query, QueryLogEntry
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,10 +39,18 @@ async def lifespan(app: FastAPI):
     app.state.startup_db_error = ""
     try:
         await get_pool()
+        if settings.ingestion_inline_worker:
+            recovered = await recover_stale_running_jobs(settings.ingestion_stale_after_seconds)
+            if recovered:
+                logger.info("Recovered %s stale ingestion jobs: %s", len(recovered), ", ".join(recovered))
+            app.state.inline_ingestion_task = asyncio.create_task(resume_queued_jobs_inline())
     except Exception as exc:
         # Keep API booting so platform healthchecks can still reach /health.
         app.state.startup_db_error = str(exc)
     yield
+    inline_task = getattr(app.state, "inline_ingestion_task", None)
+    if inline_task and not inline_task.done():
+        inline_task.cancel()
     await close_pool()
 
 
@@ -330,6 +344,23 @@ async def ask_question(req: QARequest):
         span.set_attribute("top_k", req.top_k)
         span.set_attribute("interface", "api")
 
+        cached = await get_cached_response(req.question)
+        if cached:
+            span.set_attribute("cache_hit", True)
+            cached_ms = round((time.perf_counter() - total_start) * 1000, 1)
+            record_request_latency(cached_ms, interface="api")
+            return QAResponse(
+                answer=cached["answer"],
+                citations=[CitationResponse(**c) for c in cached.get("citations", [])],
+                confidence=cached.get("confidence", ""),
+                retrieval_method="cache",
+                chunks_used=cached.get("chunks_used", 0),
+                parent_chunks_used=cached.get("parent_chunks_used", 0),
+                pipeline=[PipelineStep(step="cache_hit", duration_ms=cached_ms)],
+                total_ms=cached_ms,
+                trace_id=trace_id,
+            )
+
         t0 = time.perf_counter()
         retrieval_result = await retrieve(req.question, top_k=req.top_k)
         retrieve_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -373,6 +404,15 @@ async def ask_question(req: QARequest):
             interface="api",
         )))
 
+        await cache_response(req.question, {
+            "answer": result.answer,
+            "citations": [{"index": c.index, "source_url": c.source_url, "source_title": c.source_title} for c in result.citations],
+            "confidence": result.confidence,
+            "retrieval_method": result.retrieval_method,
+            "chunks_used": result.chunks_used,
+            "parent_chunks_used": result.parent_chunks_used,
+        })
+
     return QAResponse(
         answer=result.answer,
         citations=[
@@ -405,11 +445,13 @@ async def health():
             child_count = await conn.fetchval("SELECT count(*) FROM documents")
             parent_count = await conn.fetchval("SELECT count(*) FROM parent_chunks")
         startup_db_error = getattr(app.state, "startup_db_error", "")
+        cache_info = await get_cache_stats()
         return {
             "status": "ok" if not startup_db_error else "degraded",
             "child_chunks": child_count,
             "parent_chunks": parent_count,
             "startup_db_error": startup_db_error,
+            "cache": cache_info,
         }
     except Exception as exc:
         return {
