@@ -1,12 +1,138 @@
 {
-  "description": "Evaluation dataset for documentation QA — 15 pairs across easy/medium/hard tiers",
+  "description": "Evaluation dataset for IRS Tax Documentation QA — 15 pairs across easy/medium/hard tiers",
+  "corpus": "IRS Publications, Tax Topics, and Form Instructions (2025 tax year)",
   "pairs": [
     {
       "id": "easy_01",
       "tier": "easy",
-      "question": "placeholder — replace with actual question after ingesting docs",
-      "expected_answer_contains": [],
-      "expected_source_urls": []
+      "question": "What is the standard deduction for 2025 for a single filer?",
+      "expected_answer": "The standard deduction for single filers in 2025 is a specific dollar amount published in IRS Publication 501.",
+      "expected_source_urls": ["https://www.irs.gov/publications/p501"]
+    },
+    {
+      "id": "easy_02",
+      "tier": "easy",
+      "question": "What is the deadline to file a federal income tax return?",
+      "expected_answer": "The deadline is generally April 15 of the following year.",
+      "expected_source_urls": ["https://www.irs.gov/taxtopics/tc301"]
+    },
+    {
+      "id": "easy_03",
+      "tier": "easy",
+      "question": "What types of income are not taxable?",
+      "expected_answer": "Nontaxable income includes certain gifts, inheritances, life insurance proceeds, and some other categories.",
+      "expected_source_urls": ["https://www.irs.gov/publications/p525"]
+    },
+    {
+      "id": "easy_04",
+      "tier": "easy",
+      "question": "What is the annual contribution limit for a Health Savings Account?",
+      "expected_answer": "The HSA contribution limit varies by year and coverage type (self-only vs family).",
+      "expected_source_urls": ["https://www.irs.gov/publications/p969"]
+    },
+    {
+      "id": "easy_05",
+      "tier": "easy",
+      "question": "Can I deduct gambling losses on my tax return?",
+      "expected_answer": "You can deduct gambling losses only up to the amount of your gambling winnings, and you must itemize deductions.",
+      "expected_source_urls": ["https://www.irs.gov/taxtopics/tc419"]
+    },
+    {
+      "id": "medium_01",
+      "tier": "medium",
+      "question": "I work from home as a self-employed consultant. How do I calculate the home office deduction?",
+      "expected_answer": "Self-employed individuals can use either the regular method (actual expenses proportional to business use) or the simplified method ($5 per square foot, up to 300 sq ft).",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p587",
+        "https://www.irs.gov/taxtopics/tc509"
+      ]
+    },
+    {
+      "id": "medium_02",
+      "tier": "medium",
+      "question": "What medical expenses can I deduct, and is there an income threshold?",
+      "expected_answer": "You can deduct unreimbursed medical expenses that exceed 7.5% of your AGI if you itemize deductions.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p502",
+        "https://www.irs.gov/taxtopics/tc502"
+      ]
+    },
+    {
+      "id": "medium_03",
+      "tier": "medium",
+      "question": "I sold my primary residence for a profit. Do I have to pay capital gains tax on it?",
+      "expected_answer": "You may exclude up to $250,000 ($500,000 if married filing jointly) of gain if you meet the ownership and use tests.",
+      "expected_source_urls": ["https://www.irs.gov/publications/p523"]
+    },
+    {
+      "id": "medium_04",
+      "tier": "medium",
+      "question": "How does the Earned Income Tax Credit work and who qualifies?",
+      "expected_answer": "The EITC is a refundable credit for low-to-moderate income workers. Qualification depends on earned income, AGI, filing status, and number of qualifying children.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p596",
+        "https://www.irs.gov/taxtopics/tc601"
+      ]
+    },
+    {
+      "id": "medium_05",
+      "tier": "medium",
+      "question": "What are the rules for deducting charitable contributions of property like clothing or a car?",
+      "expected_answer": "Non-cash charitable contributions must be made to qualified organizations. The deduction is generally the fair market value, with special rules for vehicles over $500.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p526",
+        "https://www.irs.gov/taxtopics/tc506"
+      ]
+    },
+    {
+      "id": "hard_01",
+      "tier": "hard",
+      "question": "I'm 60 years old and want to convert my traditional IRA to a Roth IRA. What are the tax implications, and can I spread the tax over multiple years?",
+      "expected_answer": "A Roth conversion is taxable as ordinary income in the year of conversion. You cannot spread the tax over multiple years. However, there is no 10% early distribution penalty for conversions.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p590a",
+        "https://www.irs.gov/publications/p590b"
+      ]
+    },
+    {
+      "id": "hard_02",
+      "tier": "hard",
+      "question": "I have rental income and my AGI is $135,000. Can I deduct rental losses against my W-2 income, and how do passive activity rules affect this?",
+      "expected_answer": "Generally, passive losses can only offset passive income. However, there is a special $25,000 allowance for active participation in rental real estate that phases out between $100,000 and $150,000 MAGI.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p527",
+        "https://www.irs.gov/taxtopics/tc414"
+      ]
+    },
+    {
+      "id": "hard_03",
+      "tier": "hard",
+      "question": "My child has investment income from a trust. When does the kiddie tax apply, and how is it calculated?",
+      "expected_answer": "The kiddie tax applies to unearned income over a threshold amount for children under 19 (or under 24 if full-time students). The excess is taxed at the parent's marginal rate.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p550",
+        "https://www.irs.gov/taxtopics/tc553"
+      ]
+    },
+    {
+      "id": "hard_04",
+      "tier": "hard",
+      "question": "I'm self-employed and need to make estimated tax payments. How do I calculate them, and what happens if I underpay?",
+      "expected_answer": "Estimated tax is calculated based on expected income, deductions, and credits. You generally must pay at least 90% of current year tax or 100% of prior year tax (110% if AGI over $150,000) to avoid a penalty.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p505",
+        "https://www.irs.gov/taxtopics/tc554"
+      ]
+    },
+    {
+      "id": "hard_05",
+      "tier": "hard",
+      "question": "I'm paying for my child's college education. Should I use the American Opportunity Credit or the Lifetime Learning Credit, and can I also deduct student loan interest?",
+      "expected_answer": "The AOTC provides up to $2,500 per student for the first 4 years with income phase-outs. The LLC provides up to $2,000 per return with no limit on years. You cannot use both for the same student in the same year. Student loan interest deduction is separate and can be taken regardless of which credit you claim.",
+      "expected_source_urls": [
+        "https://www.irs.gov/publications/p970",
+        "https://www.irs.gov/taxtopics/tc456"
+      ]
     }
   ]
 }
