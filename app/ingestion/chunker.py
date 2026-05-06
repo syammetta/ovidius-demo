@@ -146,6 +146,19 @@ def _merge_small_segments(segments: list[str], min_tokens: int = 50) -> list[str
     return merged
 
 
+def _add_overlap(chunks: list[str], overlap_tokens: int = 50) -> list[str]:
+    """Add trailing context from the previous chunk to each subsequent chunk."""
+    if len(chunks) <= 1 or overlap_tokens <= 0:
+        return chunks
+
+    result = [chunks[0]]
+    for i in range(1, len(chunks)):
+        prev_tokens = enc.encode(chunks[i - 1])
+        overlap = enc.decode(prev_tokens[-overlap_tokens:]) if len(prev_tokens) > overlap_tokens else chunks[i - 1]
+        result.append(overlap.strip() + "\n\n" + chunks[i])
+    return result
+
+
 def chunk_api_reference(content: str) -> tuple[list[str], list[str]]:
     """API docs: split by endpoint/section boundaries.
 
@@ -168,6 +181,7 @@ def chunk_api_reference(content: str) -> tuple[list[str], list[str]]:
 
         sub_parts = _split_code_blocks(parent_text)
         sub_parts = _merge_small_segments(sub_parts, min_tokens=40)
+        sub_parts = _add_overlap(sub_parts, overlap_tokens=30)
 
         for part in sub_parts:
             if _token_count(part) > settings.chunk_size:
@@ -205,6 +219,7 @@ def chunk_narrative(content: str) -> tuple[list[str], list[str]]:
 
         paragraphs = _split_by_paragraphs(section)
         paragraphs = _merge_small_segments(paragraphs, min_tokens=60)
+        paragraphs = _add_overlap(paragraphs, overlap_tokens=50)
 
         for para in paragraphs:
             if _token_count(para) > 400:
@@ -242,6 +257,7 @@ def chunk_code_heavy(content: str) -> tuple[list[str], list[str]]:
 
         parts = _split_code_blocks(section)
         parts = _merge_small_segments(parts, min_tokens=40)
+        parts = _add_overlap(parts, overlap_tokens=30)
 
         for part in parts:
             if _token_count(part) > 500:
