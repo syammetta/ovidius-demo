@@ -6,6 +6,11 @@ class Settings(BaseSettings):
     voyage_api_key: str
     database_url: str
 
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = "ovidius-docs"
+
     embedding_model: str = "voyage-3"
     embedding_dimension: int = 1024
     generation_model: str = "claude-sonnet-4-6"
