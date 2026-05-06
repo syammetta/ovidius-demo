@@ -8,16 +8,19 @@ Supports three ingestion modes:
 On every crawl, raw HTML is stored in R2 so subsequent runs are instant.
 """
 
+import logging
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from app.config import settings
 from app.storage import store_document, get_document
 from app.telemetry import get_tracer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,8 +68,58 @@ async def fetch_page(url: str, use_cache: bool = True) -> str:
     return html
 
 
+def _table_to_markdown(table: Tag) -> str:
+    """Convert an HTML <table> to a markdown table preserving column structure."""
+    rows = table.find_all("tr")
+    if not rows:
+        return ""
+
+    grid: list[list[str]] = []
+    for row in rows:
+        cells = row.find_all(["th", "td"])
+        grid.append([cell.get_text(strip=True) for cell in cells])
+
+    if not grid:
+        return ""
+
+    max_cols = max(len(r) for r in grid)
+    for row in grid:
+        while len(row) < max_cols:
+            row.append("")
+
+    col_widths = [
+        max(len(row[c]) for row in grid)
+        for c in range(max_cols)
+    ]
+    col_widths = [max(w, 3) for w in col_widths]
+
+    def fmt_row(row: list[str]) -> str:
+        return "| " + " | ".join(cell.ljust(w) for cell, w in zip(row, col_widths)) + " |"
+
+    lines = [fmt_row(grid[0])]
+    lines.append("| " + " | ".join("-" * w for w in col_widths) + " |")
+    for row in grid[1:]:
+        lines.append(fmt_row(row))
+
+    return "\n".join(lines)
+
+
+def _convert_tables_in_place(soup: BeautifulSoup) -> int:
+    """Replace all <table> elements with their markdown representation."""
+    tables = soup.find_all("table")
+    count = 0
+    for table in tables:
+        md = _table_to_markdown(table)
+        if md:
+            table.replace_with(md)
+            count += 1
+        else:
+            table.decompose()
+    return count
+
+
 def parse_page(url: str, html: str) -> RawDocument:
-    """Extract clean text content from HTML."""
+    """Extract clean text content from HTML, preserving table structure as markdown."""
     tracer = get_tracer("crawler")
 
     with tracer.start_as_current_span("parse_page") as span:
@@ -78,6 +131,9 @@ def parse_page(url: str, html: str) -> RawDocument:
 
         for tag in soup.find_all(["nav", "header", "footer", "script", "style", "aside"]):
             tag.decompose()
+
+        table_count = _convert_tables_in_place(soup)
+        span.set_attribute("tables_converted", table_count)
 
         title = soup.title.string if soup.title else urlparse(url).path
         main = soup.find("main") or soup.find("article") or soup.find(role="main") or soup.body
