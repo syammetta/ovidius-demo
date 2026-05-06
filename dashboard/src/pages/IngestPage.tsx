@@ -22,6 +22,7 @@ export default function IngestPage() {
   const [url, setUrl] = useState("");
   const [useCache, setUseCache] = useState(true);
   const [dedupMode, setDedupMode] = useState<DedupMode>("skip");
+  const [corpusForceReingest, setCorpusForceReingest] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [tasks, setTasks] = useState<IngestTask[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -276,7 +277,7 @@ export default function IngestPage() {
                   Use R2 cache
                 </label>
                 <label className="text-sm text-[var(--text-secondary)]">
-                  Dedup:
+                  Dedup (URL/File):
                   <select
                     value={dedupMode}
                     onChange={(e) => setDedupMode(e.target.value as DedupMode)}
@@ -313,12 +314,21 @@ export default function IngestPage() {
                 <p className="text-xs text-[var(--text-muted)] mt-1">
                   20 publications + 32 tax topics + 5 form instructions = 57 documents
                 </p>
+                <label className="mt-2 inline-flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={corpusForceReingest}
+                    onChange={(e) => setCorpusForceReingest(e.target.checked)}
+                    className="rounded"
+                  />
+                  Force re-ingest full corpus (ignore dedup hash)
+                </label>
               </div>
               <button
                 onClick={async () => {
                   setUploadError("");
                   try {
-                    await ingestCorpus(dedupMode);
+                    await ingestCorpus(corpusForceReingest ? "force_reingest" : "skip");
                     startPolling();
                     await loadTasks();
                   } catch (e) {

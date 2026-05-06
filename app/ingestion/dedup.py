@@ -9,6 +9,7 @@ import re
 from app.db import get_pool
 
 logger = logging.getLogger(__name__)
+_SOURCE_STATE_TABLE_AVAILABLE: bool | None = None
 
 
 def _is_missing_table_error(exc: Exception) -> bool:
@@ -23,6 +24,9 @@ def canonical_source_hash(text: str) -> str:
 
 
 async def get_source_state(source_url: str) -> dict | None:
+    global _SOURCE_STATE_TABLE_AVAILABLE
+    if _SOURCE_STATE_TABLE_AVAILABLE is False:
+        return None
     pool = await get_pool()
     try:
         async with pool.acquire() as conn:
@@ -34,9 +38,12 @@ async def get_source_state(source_url: str) -> dict | None:
             )
     except Exception as exc:
         if _is_missing_table_error(exc):
-            logger.warning("source_ingest_state missing; dedup disabled until migration is applied")
+            if _SOURCE_STATE_TABLE_AVAILABLE is not False:
+                logger.warning("source_ingest_state missing; dedup disabled until migration is applied")
+            _SOURCE_STATE_TABLE_AVAILABLE = False
             return None
         raise
+    _SOURCE_STATE_TABLE_AVAILABLE = True
     return dict(row) if row else None
 
 
@@ -46,6 +53,9 @@ async def upsert_source_state(
     parent_count: int,
     child_count: int,
 ) -> None:
+    global _SOURCE_STATE_TABLE_AVAILABLE
+    if _SOURCE_STATE_TABLE_AVAILABLE is False:
+        return
     pool = await get_pool()
     try:
         async with pool.acquire() as conn:
@@ -65,6 +75,9 @@ async def upsert_source_state(
             )
     except Exception as exc:
         if _is_missing_table_error(exc):
-            logger.warning("source_ingest_state missing; cannot persist dedup state until migration is applied")
+            if _SOURCE_STATE_TABLE_AVAILABLE is not False:
+                logger.warning("source_ingest_state missing; cannot persist dedup state until migration is applied")
+            _SOURCE_STATE_TABLE_AVAILABLE = False
             return
         raise
+    _SOURCE_STATE_TABLE_AVAILABLE = True

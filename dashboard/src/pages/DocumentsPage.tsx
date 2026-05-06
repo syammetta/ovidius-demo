@@ -11,12 +11,18 @@ export default function DocumentsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
-  const pageSize = 100;
+  const [pageSize, setPageSize] = useState(25);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-  async function load(offset = 0) {
+  async function load(offset = page * pageSize, limit = pageSize) {
     setLoading(true);
     try {
-      const data = await fetchDocuments(pageSize, offset);
+      const data = await fetchDocuments(limit, offset);
+      const maxPage = Math.max(0, Math.ceil(data.total / limit) - 1);
+      if (data.total > 0 && offset >= data.total && page > maxPage) {
+        setPage(maxPage);
+        return;
+      }
       setDocs(data.documents);
       setTotal(data.total);
     } catch {
@@ -25,7 +31,7 @@ export default function DocumentsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(page * pageSize); }, [page]);
+  useEffect(() => { load(page * pageSize, pageSize); }, [page, pageSize]);
 
   async function openDetail(parentId: string) {
     if (selectedId === parentId) {
@@ -76,7 +82,7 @@ export default function DocumentsPage() {
           <p className="text-sm text-[var(--text-muted)]">{total} parent chunks in the knowledge base</p>
         </div>
         <button
-          onClick={() => load()}
+          onClick={() => load(page * pageSize, pageSize)}
           disabled={loading}
           className="text-sm text-[var(--accent)] hover:underline disabled:opacity-50"
         >
@@ -112,12 +118,35 @@ export default function DocumentsPage() {
           </div>
         )}
 
-        {!loading && total > pageSize && (
+        {!loading && total > 0 && (
           <div className="flex items-center justify-between text-sm text-[var(--text-muted)]">
-            <span>
+            <div className="flex items-center gap-3">
+              <span>
+                Page {page + 1} of {totalPages}
+              </span>
               Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of {total}
-            </span>
+            </div>
             <div className="flex gap-2">
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPage(0);
+                  setPageSize(Number(e.target.value));
+                }}
+                className="px-2 py-1 rounded-lg border border-[var(--border)] text-xs bg-[var(--surface)]"
+              >
+                <option value={10}>10 / page</option>
+                <option value={25}>25 / page</option>
+                <option value={50}>50 / page</option>
+                <option value={100}>100 / page</option>
+              </select>
+              <button
+                disabled={page === 0}
+                onClick={() => setPage(0)}
+                className="px-3 py-1 rounded-lg border border-[var(--border)] text-xs hover:bg-[var(--bg-secondary)] disabled:opacity-30"
+              >
+                First
+              </button>
               <button
                 disabled={page === 0}
                 onClick={() => setPage((p) => p - 1)}
@@ -131,6 +160,13 @@ export default function DocumentsPage() {
                 className="px-3 py-1 rounded-lg border border-[var(--border)] text-xs hover:bg-[var(--bg-secondary)] disabled:opacity-30"
               >
                 Next
+              </button>
+              <button
+                disabled={(page + 1) * pageSize >= total}
+                onClick={() => setPage(totalPages - 1)}
+                className="px-3 py-1 rounded-lg border border-[var(--border)] text-xs hover:bg-[var(--bg-secondary)] disabled:opacity-30"
+              >
+                Last
               </button>
             </div>
           </div>

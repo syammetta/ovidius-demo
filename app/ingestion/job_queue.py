@@ -79,6 +79,7 @@ async def update_job_progress(job_id: str, progress: dict[str, Any]) -> None:
         await conn.execute(
             """UPDATE ingestion_jobs
                SET progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb,
+                   claimed_at = CASE WHEN status = 'running' THEN now() ELSE claimed_at END,
                    updated_at = now()
                WHERE job_id = $2""",
             json.dumps(progress),
