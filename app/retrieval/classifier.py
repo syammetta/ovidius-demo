@@ -96,9 +96,9 @@ async def classify_query(question: str) -> tuple[QueryClassification, RetrievalS
     try:
         with tracer.start_as_current_span("classify_llm_call") as span:
             span.set_attribute("model", settings.classification_model)
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
             t0 = time.perf_counter()
-            response = client.messages.create(
+            response = await client.messages.create(
                 model=settings.classification_model,
                 max_tokens=200,
                 messages=[{

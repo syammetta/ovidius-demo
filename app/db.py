@@ -42,6 +42,7 @@ async def get_pool() -> asyncpg.Pool:
 
 async def _init_connection(conn: asyncpg.Connection):
     await register_vector(conn)
+    await conn.execute("SET ivfflat.probes = 10")
 
 
 async def close_pool():

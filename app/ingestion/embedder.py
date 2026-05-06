@@ -17,8 +17,14 @@ from app.ingestion.chunker import ParentChunk, ChildChunk
 from app.telemetry import get_tracer
 
 
-async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Generate embeddings via Voyage AI with Redis caching."""
+async def embed_texts(
+    texts: list[str],
+    input_type: str = "document",
+) -> list[list[float]]:
+    """Generate embeddings via Voyage AI with Redis caching.
+
+    input_type should be "document" for indexing and "query" for search.
+    """
     if not texts:
         return []
 
@@ -27,8 +33,9 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     with tracer.start_as_current_span("embed_texts") as span:
         span.set_attribute("total_texts", len(texts))
         span.set_attribute("model", settings.embedding_model)
+        span.set_attribute("input_type", input_type)
 
-        cached = await get_cached_embeddings(texts)
+        cached = await get_cached_embeddings(texts, input_type)
         cache_hits = len(cached)
         span.set_attribute("cache_hits", cache_hits)
 
@@ -52,7 +59,11 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
                 batch_span.set_attribute("batch_size", len(batch))
                 batch_span.set_attribute("batch_index", i // batch_size)
                 t0 = time.perf_counter()
-                result = client.embed(batch, model=settings.embedding_model)
+                result = client.embed(
+                    batch,
+                    model=settings.embedding_model,
+                    input_type=input_type,
+                )
                 api_ms = round((time.perf_counter() - t0) * 1000, 1)
                 batch_span.set_attribute("api_latency_ms", api_ms)
                 if hasattr(result, "total_tokens"):
@@ -61,7 +72,7 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
             api_calls += 1
 
         span.set_attribute("voyage_api_calls", api_calls)
-        await cache_embeddings(miss_texts, fresh_embeddings)
+        await cache_embeddings(miss_texts, fresh_embeddings, input_type)
 
         result_map = dict(cached)
         for idx, emb in zip(miss_indices, fresh_embeddings):

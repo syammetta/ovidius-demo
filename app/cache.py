@@ -55,10 +55,10 @@ def _hash_key(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:24]
 
 
-def _embedding_key(text: str) -> str:
-    """Cache key for embeddings — includes model name so a model change auto-invalidates."""
+def _embedding_key(text: str, input_type: str = "document") -> str:
+    """Cache key for embeddings — includes model + input_type so changes auto-invalidate."""
     return EMBEDDING_PREFIX + hashlib.sha256(
-        f"{settings.embedding_model}:{text}".encode()
+        f"{settings.embedding_model}:{input_type}:{text}".encode()
     ).hexdigest()[:24]
 
 
@@ -66,13 +66,13 @@ def _embedding_key(text: str) -> str:
 # Embedding cache
 # ---------------------------------------------------------------------------
 
-async def get_cached_embedding(text: str) -> list[float] | None:
+async def get_cached_embedding(text: str, input_type: str = "document") -> list[float] | None:
     """Look up a cached embedding vector for the given text."""
     client = await get_client()
     if not client:
         return None
     try:
-        raw = await client.get(_embedding_key(text))
+        raw = await client.get(_embedding_key(text, input_type))
         if raw:
             return json.loads(raw)
     except Exception:
@@ -80,14 +80,16 @@ async def get_cached_embedding(text: str) -> list[float] | None:
     return None
 
 
-async def get_cached_embeddings(texts: list[str]) -> dict[int, list[float]]:
+async def get_cached_embeddings(
+    texts: list[str], input_type: str = "document",
+) -> dict[int, list[float]]:
     """Batch lookup — returns {index: embedding} for cache hits."""
     client = await get_client()
     if not client or not texts:
         return {}
 
     try:
-        keys = [_embedding_key(t) for t in texts]
+        keys = [_embedding_key(t, input_type) for t in texts]
         values = await client.mget(keys)
         hits = {}
         for i, val in enumerate(values):
@@ -98,7 +100,9 @@ async def get_cached_embeddings(texts: list[str]) -> dict[int, list[float]]:
         return {}
 
 
-async def cache_embeddings(texts: list[str], embeddings: list[list[float]]) -> None:
+async def cache_embeddings(
+    texts: list[str], embeddings: list[list[float]], input_type: str = "document",
+) -> None:
     """Store embedding vectors in Redis with TTL."""
     client = await get_client()
     if not client:
@@ -107,7 +111,7 @@ async def cache_embeddings(texts: list[str], embeddings: list[list[float]]) -> N
     try:
         pipe = client.pipeline(transaction=False)
         for text, emb in zip(texts, embeddings):
-            pipe.setex(_embedding_key(text), EMBEDDING_TTL, json.dumps(emb))
+            pipe.setex(_embedding_key(text, input_type), EMBEDDING_TTL, json.dumps(emb))
         await pipe.execute()
     except Exception as e:
         logger.debug("Failed to cache embeddings: %s", e)

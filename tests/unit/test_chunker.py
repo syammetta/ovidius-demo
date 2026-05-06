@@ -20,7 +20,6 @@ from app.ingestion.chunker import (
     _split_by_headings,
     _split_by_paragraphs,
     _merge_small_segments,
-    _find_parent,
     _token_count,
 )
 
@@ -222,8 +221,16 @@ class TestNarrativeChunking:
     def test_paragraph_boundaries_respected(self):
         content = "First paragraph about deductions.\n\nSecond paragraph about credits.\n\nThird paragraph about income."
         parents, children = chunk_narrative(content)
-        for child in children:
-            assert not child.startswith("\n")
+        for text, _parent_idx in children:
+            assert not text.startswith("\n")
+
+    def test_children_carry_parent_index(self):
+        section_a = "## Filing Status\n\n" + "Your filing status determines your tax rate. " * 10
+        section_b = "\n\n## Dependents\n\n" + "You may claim dependents. " * 10
+        content = section_a + section_b
+        parents, children = chunk_narrative(content)
+        for _text, parent_idx in children:
+            assert 0 <= parent_idx < len(parents)
 
 
 class TestApiReferenceChunking:
@@ -237,8 +244,8 @@ class TestApiReferenceChunking:
     def test_code_blocks_preserved(self):
         content = "## Endpoint\n\nThis endpoint returns the tax calculation result as a JSON object with the following structure for all supported filing statuses.\n\n```json\n{\"key\": \"value\", \"tax_owed\": 12500, \"effective_rate\": 0.167}\n```\n\nThe response includes the computed tax owed, effective rate, and marginal bracket information."
         parents, children = chunk_api_reference(content)
-        found_code = any("```" in c for c in children)
-        assert found_code or any("{\"key\"" in c for c in children)
+        found_code = any("```" in text for text, _ in children)
+        assert found_code or any("{\"key\"" in text for text, _ in children)
 
 
 class TestCodeHeavyChunking:
@@ -246,28 +253,18 @@ class TestCodeHeavyChunking:
         code = "```python\ndef foo():\n    return 42\n```"
         content = f"## Example\n\n{code}\n\nExplanation text."
         parents, children = chunk_code_heavy(content)
-        for child in children:
-            if "def foo" in child:
-                assert "return 42" in child, "Code block was split"
+        for text, _ in children:
+            if "def foo" in text:
+                assert "return 42" in text, "Code block was split"
 
 
-# ---------------------------------------------------------------------------
-# Parent finding
-# ---------------------------------------------------------------------------
+class TestParentLinkage:
+    def test_children_link_to_correct_parent_via_chunk_document(self):
+        section_a = "## Standard Deduction\n\n" + "The standard deduction reduces your taxable income. " * 15
+        section_b = "\n\n## Itemized Deductions\n\n" + "You can choose to itemize your deductions instead. " * 15
+        content = section_a + section_b
+        result = chunk_document(content, "https://irs.gov/pub/p501", "Pub 501", "pubs")
 
-class TestFindParent:
-    def test_exact_containment(self):
-        parents = ["First parent with the standard deduction info.", "Second parent about credits."]
-        child = "standard deduction"
-        idx = _find_parent(child, parents)
-        assert idx == 0
-
-    def test_word_overlap_fallback(self):
-        parents = ["Income tax rates and brackets", "Deductions and exemptions for filing"]
-        child = "filing exemptions and deductions"
-        idx = _find_parent(child, parents)
-        assert idx == 1
-
-    def test_empty_parents(self):
-        idx = _find_parent("some child", [])
-        assert idx == 0
+        parent_ids = {p.parent_id for p in result.parents}
+        for child in result.children:
+            assert child.parent_id in parent_ids

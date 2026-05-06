@@ -20,6 +20,8 @@ from app.config import settings
 
 enc = tiktoken.get_encoding("cl100k_base")
 
+ChildWithParent = tuple[str, int]
+
 
 @dataclass
 class ParentChunk:
@@ -159,24 +161,21 @@ def _add_overlap(chunks: list[str], overlap_tokens: int = 50) -> list[str]:
     return result
 
 
-def chunk_api_reference(content: str) -> tuple[list[str], list[str]]:
-    """API docs: split by endpoint/section boundaries.
-
-    Parent chunks = full endpoint sections (parameters + examples + response).
-    Child chunks = individual parameters, code examples, response fields.
-    """
+def chunk_api_reference(content: str) -> tuple[list[str], list[ChildWithParent]]:
+    """API docs: split by endpoint/section boundaries."""
     sections = _split_by_headings(content)
     if not sections:
         sections = [content]
 
     parents = []
-    children = []
+    children: list[ChildWithParent] = []
 
     for section in sections:
         parent_text = section.strip()
         if not parent_text or _token_count(parent_text) < 30:
             continue
 
+        parent_idx = len(parents)
         parents.append(parent_text)
 
         sub_parts = _split_code_blocks(parent_text)
@@ -186,31 +185,28 @@ def chunk_api_reference(content: str) -> tuple[list[str], list[str]]:
         for part in sub_parts:
             if _token_count(part) > settings.chunk_size:
                 for sub in _split_by_tokens(part, 200, 30):
-                    children.append(sub)
+                    children.append((sub, parent_idx))
             else:
-                children.append(part)
+                children.append((part, parent_idx))
 
     return parents, children
 
 
-def chunk_narrative(content: str) -> tuple[list[str], list[str]]:
-    """Narrative guides: paragraph-based splitting with larger context.
-
-    Parent chunks = full sections under headings (~1500 tokens).
-    Child chunks = individual paragraphs or paragraph groups (~300 tokens).
-    """
+def chunk_narrative(content: str) -> tuple[list[str], list[ChildWithParent]]:
+    """Narrative guides: paragraph-based splitting with larger context."""
     sections = _split_by_headings(content)
     if not sections:
         sections = _split_by_paragraphs(content)
 
     parents = []
-    children = []
+    children: list[ChildWithParent] = []
 
     for section in sections:
         section = section.strip()
         if not section or _token_count(section) < 30:
             continue
 
+        parent_idx = len(parents)
         if _token_count(section) > 1500:
             for parent_chunk in _split_by_tokens(section, 1500, 200):
                 parents.append(parent_chunk)
@@ -224,31 +220,28 @@ def chunk_narrative(content: str) -> tuple[list[str], list[str]]:
         for para in paragraphs:
             if _token_count(para) > 400:
                 for sub in _split_by_tokens(para, 300, 50):
-                    children.append(sub)
+                    children.append((sub, parent_idx))
             else:
-                children.append(para)
+                children.append((para, parent_idx))
 
     return parents, children
 
 
-def chunk_code_heavy(content: str) -> tuple[list[str], list[str]]:
-    """Code-heavy docs: preserve code blocks as atomic units.
-
-    Parent chunks = full sections with code + surrounding explanation.
-    Child chunks = individual code blocks + their immediate description.
-    """
+def chunk_code_heavy(content: str) -> tuple[list[str], list[ChildWithParent]]:
+    """Code-heavy docs: preserve code blocks as atomic units."""
     sections = _split_by_headings(content)
     if not sections:
         sections = [content]
 
     parents = []
-    children = []
+    children: list[ChildWithParent] = []
 
     for section in sections:
         section = section.strip()
         if not section or _token_count(section) < 30:
             continue
 
+        parent_idx = len(parents)
         if _token_count(section) > 1500:
             for parent_chunk in _split_by_tokens(section, 1500, 200):
                 parents.append(parent_chunk)
@@ -262,9 +255,9 @@ def chunk_code_heavy(content: str) -> tuple[list[str], list[str]]:
         for part in parts:
             if _token_count(part) > 500:
                 for sub in _split_by_tokens(part, 300, 50):
-                    children.append(sub)
+                    children.append((sub, parent_idx))
             else:
-                children.append(part)
+                children.append((part, parent_idx))
 
     return parents, children
 
@@ -291,7 +284,7 @@ def chunk_document(
     doc_type = doc_type_override or detect_document_type(content, source_url)
     strategy = CHUNKING_STRATEGIES.get(doc_type, chunk_narrative)
 
-    parent_texts, child_texts = strategy(content)
+    parent_texts, children_with_parents = strategy(content)
 
     result = ChunkResult()
 
@@ -312,12 +305,14 @@ def chunk_document(
             token_count=_token_count(parent_text),
         ))
 
-    for j, child_text in enumerate(child_texts):
+    for j, (child_text, parent_idx) in enumerate(children_with_parents):
         h = _content_hash(child_text)
         chunk_id = f"c_{h}_{j}"
 
-        best_parent_idx = _find_parent(child_text, parent_texts)
-        parent_id = parent_map.get(best_parent_idx, list(parent_map.values())[0] if parent_map else "orphan")
+        parent_id = parent_map.get(
+            parent_idx,
+            list(parent_map.values())[0] if parent_map else "orphan",
+        )
 
         result.children.append(ChildChunk(
             chunk_id=chunk_id,
@@ -332,21 +327,3 @@ def chunk_document(
         ))
 
     return result
-
-
-def _find_parent(child_text: str, parent_texts: list[str]) -> int:
-    """Find which parent chunk contains (or most overlaps with) this child."""
-    best_idx = 0
-    best_overlap = 0
-    child_words = set(child_text.lower().split())
-
-    for i, parent_text in enumerate(parent_texts):
-        if child_text in parent_text:
-            return i
-        parent_words = set(parent_text.lower().split())
-        overlap = len(child_words & parent_words)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_idx = i
-
-    return best_idx

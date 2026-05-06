@@ -34,7 +34,7 @@ async def vector_search(query: str, top_n: int | None = None) -> list[RetrievedC
         span.set_attribute("top_n", top_n)
 
         t0 = time.perf_counter()
-        embeddings = await embed_texts([query])
+        embeddings = await embed_texts([query], input_type="query")
         embed_ms = round((time.perf_counter() - t0) * 1000, 1)
         span.set_attribute("query_embed_ms", embed_ms)
 
@@ -95,7 +95,7 @@ async def metadata_vector_search(
         span.set_attribute("doc_types", ",".join(doc_types))
 
         t0 = time.perf_counter()
-        embeddings = await embed_texts([query])
+        embeddings = await embed_texts([query], input_type="query")
         embed_ms = round((time.perf_counter() - t0) * 1000, 1)
         span.set_attribute("query_embed_ms", embed_ms)
 
