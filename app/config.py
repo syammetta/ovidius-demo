@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     otel_exporter_endpoint: str = ""
     otel_trace_sample_rate: float = 1.0
     traces_max_in_memory: int = 500
+    demo_access_code: str = "OVIDIUS-DEMO-2026"
+    demo_access_cookie_name: str = "ovidius_demo_access"
+    redis_url: str = ""
+    ingestion_inline_worker: bool = True
+    ingestion_worker_poll_ms: int = 2000
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

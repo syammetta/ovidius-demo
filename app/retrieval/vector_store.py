@@ -62,6 +62,53 @@ async def vector_search(query: str, top_n: int | None = None) -> list[RetrievedC
     ]
 
 
+async def metadata_vector_search(
+    query: str,
+    doc_types: list[str],
+    top_n: int | None = None,
+) -> list[RetrievedChunk]:
+    """Vector search filtered to specific document types — the metadata-boosted lane."""
+    if not doc_types:
+        return []
+
+    top_n = top_n or settings.retrieval_top_n
+    embeddings = await embed_texts([query])
+    query_vec = np.array(embeddings[0], dtype=np.float32)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT chunk_id, parent_id, content, contextual_content,
+                   source_url, source_title, section, document_type,
+                   1 - (embedding <=> $1) AS similarity
+            FROM documents
+            WHERE document_type = ANY($3)
+            ORDER BY embedding <=> $1
+            LIMIT $2
+            """,
+            query_vec,
+            top_n,
+            doc_types,
+        )
+
+    return [
+        RetrievedChunk(
+            chunk_id=row["chunk_id"],
+            parent_id=row["parent_id"],
+            content=row["content"],
+            contextual_content=row["contextual_content"],
+            source_url=row["source_url"],
+            source_title=row["source_title"],
+            section=row["section"],
+            document_type=row["document_type"],
+            score=float(row["similarity"]),
+            retrieval_method="metadata_vector",
+        )
+        for row in rows
+    ]
+
+
 async def bm25_search(query: str, top_n: int | None = None) -> list[RetrievedChunk]:
     """Full-text search using Postgres tsvector/tsquery (BM25-style ranking)."""
     top_n = top_n or settings.retrieval_top_n

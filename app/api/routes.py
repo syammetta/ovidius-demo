@@ -5,9 +5,9 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from app.config import settings
@@ -16,6 +16,7 @@ from app.retrieval.context_builder import retrieve
 from app.generation.answerer import generate_answer
 from app.agent.routes import router as agent_router
 from app.api.eval_routes import router as eval_router
+from app.api.doc_routes import router as doc_router
 from app.ws.routes import router as ws_router
 from app.telemetry import (
     setup_telemetry, get_tracer, get_current_trace_id,
@@ -42,12 +43,246 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Ovidius Doc QA", version="0.1.0", lifespan=lifespan)
 app.include_router(agent_router)
 app.include_router(eval_router)
+app.include_router(doc_router)
 app.include_router(ws_router)
 
 STATIC_DIR = Path(__file__).parent.parent.parent / "static"
 ASSETS_DIR = STATIC_DIR / "assets"
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+
+
+def _is_demo_authorized(request: Request) -> bool:
+    access_cookie = request.cookies.get(settings.demo_access_cookie_name, "")
+    return access_cookie == settings.demo_access_code
+
+
+def _render_demo_landing(error: str = "") -> HTMLResponse:
+    error_html = (
+        f'<p style="color:#fecaca;font-size:13px;margin:0 0 12px 0;padding:10px 12px;border:1px solid rgba(248,113,113,0.45);background:rgba(127,29,29,0.35);border-radius:10px;">{error}</p>'
+        if error
+        else ""
+    )
+    html = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ovidius Demo Access</title>
+    <style>
+      body {{
+        margin: 0;
+        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(1200px 700px at 12% 10%, #1e3a8a 0%, rgba(30, 58, 138, 0) 55%),
+                    radial-gradient(1000px 600px at 90% 90%, #4f46e5 0%, rgba(79, 70, 229, 0) 50%),
+                    linear-gradient(145deg, #050816 0%, #0b1224 45%, #121a2f 100%);
+        color: #e2e8f0;
+      }}
+      .wrap {{
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+      }}
+      .card {{
+        width: 100%;
+        max-width: 740px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 18px;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.75));
+        box-shadow: 0 30px 80px rgba(2, 6, 23, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(6px);
+      }}
+      .hero {{
+        padding: 30px 30px 20px 30px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+        background:
+          radial-gradient(700px 180px at -10% 0%, rgba(59, 130, 246, 0.35), rgba(59, 130, 246, 0)),
+          radial-gradient(600px 160px at 105% 10%, rgba(99, 102, 241, 0.4), rgba(99, 102, 241, 0));
+      }}
+      .badge {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 11px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: #bfdbfe;
+        border: 1px solid rgba(96, 165, 250, 0.4);
+        background: rgba(37, 99, 235, 0.18);
+      }}
+      h1 {{
+        margin: 14px 0 8px 0;
+        font-size: 33px;
+        line-height: 1.15;
+        color: #f8fafc;
+        letter-spacing: -0.02em;
+      }}
+      p {{
+        margin: 0 0 14px 0;
+        color: #cbd5e1;
+      }}
+      ul {{
+        margin: 14px 0 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 8px;
+      }}
+      li {{
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        color: #dbeafe;
+        font-size: 14px;
+      }}
+      li::before {{
+        content: "✦";
+        color: #93c5fd;
+        margin-top: 1px;
+      }}
+      .form {{
+        padding: 22px 30px 28px 30px;
+      }}
+      .label {{
+        display: block;
+        margin-bottom: 8px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #94a3b8;
+        font-weight: 600;
+      }}
+      input {{
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid rgba(148, 163, 184, 0.45);
+        border-radius: 12px;
+        padding: 13px 14px;
+        font-size: 14px;
+        margin-bottom: 14px;
+        color: #e2e8f0;
+        background: rgba(15, 23, 42, 0.55);
+        outline: none;
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }}
+      input::placeholder {{
+        color: #64748b;
+      }}
+      input:focus {{
+        border-color: #60a5fa;
+        box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
+      }}
+      button {{
+        border: none;
+        border-radius: 12px;
+        background: linear-gradient(180deg, #3b82f6, #2563eb);
+        color: #eff6ff;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 11px 18px;
+        cursor: pointer;
+        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+        transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+      }}
+      button:hover {{
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.45);
+      }}
+      button:active {{
+        transform: translateY(0);
+      }}
+      .inline {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }}
+      .muted {{
+        margin-top: 14px;
+        font-size: 12px;
+        color: #94a3b8;
+      }}
+      .hint {{
+        color: #60a5fa;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        border: 1px solid rgba(96, 165, 250, 0.35);
+        background: rgba(30, 64, 175, 0.18);
+        padding: 6px 10px;
+        border-radius: 999px;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="hero">
+          <span class="badge">Private Preview</span>
+          <h1>Ovidius AI Demo Portal</h1>
+          <p>Explore tax-focused RAG workflows with transparent reasoning, citation-backed answers, and deep observability tooling.</p>
+          <ul>
+            <li>Ask complex tax questions and receive structured, source-cited responses</li>
+            <li>Inspect retrieval, reranking, and generation pipeline health in real time</li>
+            <li>Ingest domain content and validate quality with trace-level visibility</li>
+          </ul>
+        </div>
+        <div class="form">
+          {error_html}
+          <form method="post" action="/demo-access">
+            <label class="label" for="access_code">Access Code</label>
+            <input id="access_code" type="password" name="access_code" placeholder="Enter your team access code" required />
+            <div class="inline">
+              <button type="submit">Enter Demo</button>
+              <span class="hint">Secure access enabled</span>
+            </div>
+          </form>
+          <p class="muted">Access is restricted. Contact the Ovidius team if you need a demo key.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+@app.middleware("http")
+async def gate_dashboard_assets(request: Request, call_next):
+    if request.url.path.startswith("/assets") and not _is_demo_authorized(request):
+        return RedirectResponse(url="/demo-access", status_code=307)
+    return await call_next(request)
+
+
+@app.get("/demo-access", response_class=HTMLResponse)
+async def demo_access_page():
+    return _render_demo_landing()
+
+
+@app.post("/demo-access")
+async def demo_access_submit(request: Request, access_code: str = Form(...)):
+    if access_code != settings.demo_access_code:
+        return _render_demo_landing(error="Invalid access code. Please try again.")
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        key=settings.demo_access_cookie_name,
+        value=settings.demo_access_code,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=60 * 60 * 24 * 7,
+    )
+    return response
+
+
+@app.post("/demo-logout")
+async def demo_logout():
+    response = RedirectResponse(url="/demo-access", status_code=303)
+    response.delete_cookie(settings.demo_access_cookie_name)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +492,9 @@ async def get_query_logs(
 # ---------------------------------------------------------------------------
 
 @app.get("/")
-async def dashboard():
+async def dashboard(request: Request):
+    if not _is_demo_authorized(request):
+        return RedirectResponse(url="/demo-access", status_code=307)
     index = STATIC_DIR / "index.html"
     if not index.exists():
         return {"status": "ok", "message": "Ovidius Doc QA API. Dashboard not yet built."}

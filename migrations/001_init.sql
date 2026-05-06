@@ -52,6 +52,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_documents_tsv ON documents;
 CREATE TRIGGER trg_documents_tsv
     BEFORE INSERT OR UPDATE ON documents
     FOR EACH ROW EXECUTE FUNCTION update_tsv();

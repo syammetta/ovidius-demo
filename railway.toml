@@ -3,7 +3,7 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python scripts/migrate.py; uvicorn app.api.routes:app --host 0.0.0.0 --port ${PORT:-8000}"
+startCommand = "sh -c 'echo \"[startup] ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) port=${PORT}\"; python scripts/migrate.py; echo \"[startup] launching uvicorn\"; uvicorn app.api.routes:app --host 0.0.0.0 --port ${PORT}'"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "on_failure"
