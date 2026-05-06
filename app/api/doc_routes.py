@@ -2,13 +2,14 @@
 
 import asyncio
 import io
+from typing import Literal
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
 from app.config import settings
 from app.db import get_pool
-from app.ingestion.job_queue import enqueue_job, get_job, list_jobs, request_pause, resume_job
+from app.ingestion.job_queue import enqueue_job, get_job, list_jobs, request_pause, resume_job, clear_pause_request
 from app.ingestion.worker import process_job_by_id
 
 router = APIRouter(prefix="/api")
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/api")
 class IngestRequest(BaseModel):
     url: str
     use_cache: bool = True
+    dedup_mode: Literal["skip", "force_reingest"] = "skip"
 
 
 @router.get("/documents")
@@ -85,7 +87,7 @@ async def ingest_url(req: IngestRequest):
     task_id = await enqueue_job(
         job_type="url",
         source=req.url,
-        payload={"url": req.url, "use_cache": req.use_cache},
+        payload={"url": req.url, "use_cache": req.use_cache, "dedup_mode": req.dedup_mode},
     )
     if settings.ingestion_inline_worker:
         asyncio.create_task(process_job_by_id(task_id, worker_id="web-inline"))
@@ -150,7 +152,23 @@ async def pause_ingest_task(task_id: str):
 async def resume_ingest_task(task_id: str):
     job = await resume_job(task_id)
     if not job:
-        raise HTTPException(status_code=400, detail="Task is not paused")
+        # If still running but pause was requested, "resume" means clear that request.
+        job = await clear_pause_request(task_id)
+        if job:
+            await asyncio.sleep(0)
+            fresh = await get_job(task_id)
+            progress = (fresh or {}).get("progress", {})
+            return {
+                "task_id": (fresh or job)["job_id"],
+                "status": (fresh or job)["status"],
+                "url": (fresh or job)["source"],
+                "stats": progress.get("stats"),
+                "progress": progress,
+                "error": (fresh or job)["error"],
+                "logs": (fresh or job).get("logs", []),
+            }
+    if not job:
+        raise HTTPException(status_code=400, detail="Task is neither paused nor awaiting pause")
     await asyncio.sleep(0)
     if settings.ingestion_inline_worker:
         asyncio.create_task(process_job_by_id(task_id, worker_id="web-inline"))
@@ -179,11 +197,11 @@ def _extract_text_from_pdf(data: bytes) -> str:
 
 
 @router.post("/ingest/corpus")
-async def ingest_corpus():
+async def ingest_corpus(dedup_mode: Literal["skip", "force_reingest"] = "skip"):
     task_id = await enqueue_job(
         job_type="corpus",
         source="corpus://irs-full",
-        payload={},
+        payload={"dedup_mode": dedup_mode},
     )
     if settings.ingestion_inline_worker:
         asyncio.create_task(process_job_by_id(task_id, worker_id="web-inline"))
@@ -191,7 +209,10 @@ async def ingest_corpus():
 
 
 @router.post("/ingest/file")
-async def ingest_file(file: UploadFile = File(...)):
+async def ingest_file(
+    file: UploadFile = File(...),
+    dedup_mode: Literal["skip", "force_reingest"] = Form("skip"),
+):
     data = await file.read()
     filename = file.filename or "uploaded_document"
 
@@ -212,7 +233,7 @@ async def ingest_file(file: UploadFile = File(...)):
     task_id = await enqueue_job(
         job_type="file",
         source=f"file://{filename}",
-        payload={"filename": filename, "text": text},
+        payload={"filename": filename, "text": text, "dedup_mode": dedup_mode},
     )
     if settings.ingestion_inline_worker:
         asyncio.create_task(process_job_by_id(task_id, worker_id="web-inline"))

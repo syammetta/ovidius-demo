@@ -8,7 +8,7 @@ import {
   pauseIngestTask,
   resumeIngestTask,
 } from "../api";
-import type { IngestTask } from "../api";
+import type { DedupMode, IngestTask } from "../api";
 
 const PIPELINE_STEPS = [
   { key: "classify_metadata", label: "Classify Metadata" },
@@ -21,6 +21,7 @@ const PIPELINE_STEPS = [
 export default function IngestPage() {
   const [url, setUrl] = useState("");
   const [useCache, setUseCache] = useState(true);
+  const [dedupMode, setDedupMode] = useState<DedupMode>("skip");
   const [submitting, setSubmitting] = useState(false);
   const [tasks, setTasks] = useState<IngestTask[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -69,7 +70,7 @@ export default function IngestPage() {
     setSubmitting(true);
     setUploadError("");
     try {
-      await ingestUrl(u, useCache);
+      await ingestUrl(u, useCache, dedupMode);
       setUrl("");
       startPolling();
       await loadTasks();
@@ -88,7 +89,7 @@ export default function IngestPage() {
         continue;
       }
       try {
-        await ingestFile(file);
+        await ingestFile(file, dedupMode);
         startPolling();
         await loadTasks();
       } catch (e) {
@@ -156,6 +157,9 @@ export default function IngestPage() {
       pipelineSteps: p.pipeline_steps || {},
       metadata: p.metadata_labels || null,
       pauseRequested: !!p.pause_requested,
+      dedupMode: p.dedup_mode || "skip",
+      dedupSkipped: !!p.dedup_skipped,
+      dedupSkips: p.dedup_skips ?? cp.dedup_skips ?? 0,
     };
   };
 
@@ -261,15 +265,28 @@ export default function IngestPage() {
             </div>
 
             <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useCache}
-                  onChange={(e) => setUseCache(e.target.checked)}
-                  className="rounded"
-                />
-                Use R2 cache
-              </label>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useCache}
+                    onChange={(e) => setUseCache(e.target.checked)}
+                    className="rounded"
+                  />
+                  Use R2 cache
+                </label>
+                <label className="text-sm text-[var(--text-secondary)]">
+                  Dedup:
+                  <select
+                    value={dedupMode}
+                    onChange={(e) => setDedupMode(e.target.value as DedupMode)}
+                    className="ml-2 px-2 py-1 rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]"
+                  >
+                    <option value="skip">skip unchanged</option>
+                    <option value="force_reingest">force re-ingest</option>
+                  </select>
+                </label>
+              </div>
 
               <button
                 onClick={handleUrlSubmit}
@@ -301,7 +318,7 @@ export default function IngestPage() {
                 onClick={async () => {
                   setUploadError("");
                   try {
-                    await ingestCorpus();
+                    await ingestCorpus(dedupMode);
                     startPolling();
                     await loadTasks();
                   } catch (e) {
@@ -397,6 +414,15 @@ export default function IngestPage() {
                               : "stop"}
                         </button>
                       )}
+                      {task.status === "running" && getTaskProgress(task).pauseRequested && (
+                        <button
+                          onClick={() => handleResumeTask(task.task_id)}
+                          disabled={taskAction[task.task_id] === "resume"}
+                          className="text-[10px] text-[var(--accent)] hover:underline disabled:opacity-50"
+                        >
+                          {taskAction[task.task_id] === "resume" ? "resuming..." : "resume"}
+                        </button>
+                      )}
                       {task.status === "paused" && (
                         <button
                           onClick={() => handleResumeTask(task.task_id)}
@@ -430,6 +456,7 @@ export default function IngestPage() {
                                 <p>
                                   crawled {prog.crawled}/{prog.total} · processed {prog.processed}/{prog.total}
                                   {prog.failed > 0 ? ` · failed ${prog.failed}` : ""}
+                                  {prog.dedupSkips > 0 ? ` · dedup skipped ${prog.dedupSkips}` : ""}
                                 </p>
                               )}
                               {prog.currentDoc > 0 && prog.total > 0 && (
@@ -437,7 +464,13 @@ export default function IngestPage() {
                               )}
                               {prog.currentTitle && <p className="truncate">current: {prog.currentTitle}</p>}
                               {!prog.currentTitle && prog.currentUrl && <p className="truncate">current: {prog.currentUrl}</p>}
+                              <p>dedup mode: {prog.dedupMode === "force_reingest" ? "force re-ingest" : "skip unchanged"}</p>
                             </div>
+                          )}
+                          {prog.dedupSkipped && (
+                            <p className="text-[11px] text-[var(--green)]">
+                              unchanged content detected; indexing skipped.
+                            </p>
                           )}
                           {prog.pauseRequested && task.status !== "paused" && (
                             <p className="text-[11px] text-[var(--yellow)]">

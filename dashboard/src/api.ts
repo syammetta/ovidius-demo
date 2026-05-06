@@ -105,11 +105,13 @@ export async function deleteDocument(parentId: string) {
   return res.json();
 }
 
-export async function ingestUrl(url: string, useCache = true) {
+export type DedupMode = "skip" | "force_reingest";
+
+export async function ingestUrl(url: string, useCache = true, dedupMode: DedupMode = "skip") {
   const res = await fetch("/api/ingest/url", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, use_cache: useCache }),
+    body: JSON.stringify({ url, use_cache: useCache, dedup_mode: dedupMode }),
   });
   if (!res.ok) throw new Error("Failed to start ingestion");
   return res.json() as Promise<{ task_id: string; status: string }>;
@@ -127,8 +129,8 @@ export async function fetchIngestTask(taskId: string) {
   return res.json() as Promise<IngestTask>;
 }
 
-export async function ingestCorpus() {
-  const res = await fetch("/api/ingest/corpus", { method: "POST" });
+export async function ingestCorpus(dedupMode: DedupMode = "skip") {
+  const res = await fetch(`/api/ingest/corpus?dedup_mode=${encodeURIComponent(dedupMode)}`, { method: "POST" });
   if (!res.ok) throw new Error("Failed to start corpus ingestion");
   return res.json() as Promise<{ task_id: string; status: string }>;
 }
@@ -151,9 +153,10 @@ export async function resumeIngestTask(taskId: string) {
   return res.json() as Promise<IngestTask>;
 }
 
-export async function ingestFile(file: File) {
+export async function ingestFile(file: File, dedupMode: DedupMode = "skip") {
   const form = new FormData();
   form.append("file", file);
+  form.append("dedup_mode", dedupMode);
   const res = await fetch("/api/ingest/file", { method: "POST", body: form });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Upload failed" }));
@@ -233,12 +236,15 @@ export interface IngestTask {
       llm_used?: boolean;
     };
     pause_requested?: boolean;
+    dedup_mode?: DedupMode;
+    dedup_skipped?: boolean;
     completion?: number;
     total_docs?: number;
     current_doc?: number;
     crawled_docs?: number;
     processed_docs?: number;
     failed_crawls?: number;
+    dedup_skips?: number;
     current_url?: string;
     current_title?: string;
     corpus_progress?: {
@@ -249,6 +255,7 @@ export interface IngestTask {
       children?: number;
       crawled_docs?: number;
       failed_crawls?: number;
+      dedup_skips?: number;
     };
   } | null;
   error: string | null;

@@ -133,13 +133,13 @@ async def claim_next_job(worker_id: str) -> dict[str, Any] | None:
 
 
 async def complete_job(job_id: str, stats: dict[str, Any] | None = None) -> None:
-    progress = {"stats": stats or {}}
+    progress = {"phase": "completed", "completion": 100, "stats": stats or {}}
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """UPDATE ingestion_jobs
                SET status = 'completed',
-                   progress = $1::jsonb,
+                   progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb,
                    finished_at = now(),
                    updated_at = now()
                WHERE job_id = $2""",
@@ -312,3 +312,20 @@ async def resume_job(job_id: str) -> dict[str, Any] | None:
         except Exception:
             pass
     return _row_to_job(row)
+
+
+async def clear_pause_request(job_id: str) -> dict[str, Any] | None:
+    """Clear pending pause request for a running job (acts like resume/continue)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE ingestion_jobs
+               SET progress = progress - 'pause_requested',
+                   updated_at = now()
+               WHERE job_id = $1
+                 AND status = 'running'
+                 AND (progress->>'pause_requested')::boolean IS TRUE
+               RETURNING *""",
+            job_id,
+        )
+    return _row_to_job(row) if row else None

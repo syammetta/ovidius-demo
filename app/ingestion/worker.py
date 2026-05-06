@@ -12,6 +12,7 @@ from typing import Any
 from app.config import settings
 from app.ingestion.chunker import chunk_document
 from app.ingestion.document_classifier import classify_document_metadata
+from app.ingestion.dedup import canonical_source_hash, get_source_state, upsert_source_state
 from app.ingestion.contextualizer import contextualize_chunks
 from app.ingestion.crawler import crawl_url
 from app.ingestion.embedder import embed_and_store_children, store_parents
@@ -36,6 +37,16 @@ PIPELINE_STEPS = ["classify_metadata", "chunking", "contextualizing", "storing_p
 
 class PauseRequested(Exception):
     """Raised when a running job should be paused at next safe checkpoint."""
+
+
+def _dedup_mode(job: dict[str, Any]) -> str:
+    payload = job.get("payload") or {}
+    mode = str(payload.get("dedup_mode", "skip")).strip().lower()
+    return mode if mode in {"skip", "force_reingest"} else "skip"
+
+
+def _should_skip_unchanged(job: dict[str, Any]) -> bool:
+    return _dedup_mode(job) == "skip"
 
 
 def _extract_text_from_pdf(data: bytes) -> str:
@@ -105,6 +116,8 @@ async def _process_document(
         doc_span.set_attribute("source_title", source_title[:200])
         doc_span.set_attribute("job_id", job_id)
         doc_span.set_attribute("interface", "ingestion")
+        doc_span.set_attribute("chunk_size", settings.chunk_size)
+        doc_span.set_attribute("chunk_overlap", settings.chunk_overlap)
         if current_doc is not None:
             doc_span.set_attribute("doc_index", f"{current_doc}/{total_docs or '?'}")
 
@@ -175,6 +188,9 @@ async def _process_document(
             chunk_span.set_attribute("parent_count", len(result.parents))
             chunk_span.set_attribute("child_count", len(result.children))
             chunk_span.set_attribute("doc_type", doc_type)
+            chunk_span.set_attribute("chunk_size", settings.chunk_size)
+            chunk_span.set_attribute("chunk_overlap", settings.chunk_overlap)
+            chunk_span.set_attribute("chunk_strategy", metadata.doc_type)
             chunk_span.set_attribute("duration_ms", chunk_ms)
 
         await append_job_log(
@@ -252,6 +268,11 @@ async def _process_document(
                             "contextualize_done": done,
                             "contextualize_total": total,
                             "contextualize_pct": pct,
+                    "chunk_config": {
+                        "chunk_size": settings.chunk_size,
+                        "chunk_overlap": settings.chunk_overlap,
+                        "chunk_strategy": metadata.doc_type,
+                    },
                         },
                     )
                 if await _pause_requested(job_id):
@@ -338,6 +359,35 @@ async def _run_url_job(job: dict[str, Any]) -> dict[str, Any]:
         doc = await crawl_url(url, use_cache=use_cache)
         crawl_span.set_attribute("title", doc.title[:200])
     await append_job_log(job["job_id"], f"Fetched: {doc.title[:80]}")
+
+    source_hash = canonical_source_hash(doc.content)
+    prev_state = await get_source_state(doc.url) if _should_skip_unchanged(job) else None
+    if prev_state and prev_state.get("source_hash") == source_hash:
+        await append_job_log(
+            job["job_id"],
+            "Dedup: source content unchanged; skipping re-ingestion.",
+        )
+        await update_job_progress(
+            job["job_id"],
+            {
+                "phase": "completed",
+                "completion": 100,
+                "dedup_skipped": True,
+                "dedup_mode": _dedup_mode(job),
+                "stats": {
+                    "parents": int(prev_state.get("last_parent_count", 0)),
+                    "children": int(prev_state.get("last_child_count", 0)),
+                    "title": doc.title,
+                    "document_type": "unchanged",
+                },
+            },
+        )
+        return {
+            "parents": int(prev_state.get("last_parent_count", 0)),
+            "children": int(prev_state.get("last_child_count", 0)),
+            "title": doc.title,
+            "document_type": "unchanged",
+        }
     await update_job_progress(
         job["job_id"],
         {"phase": "processing", "completion": 45, "current_title": doc.title, "current_url": doc.url},
@@ -351,6 +401,12 @@ async def _run_url_job(job: dict[str, Any]) -> dict[str, Any]:
         section=doc.section,
         current_doc=1,
         total_docs=1,
+    )
+    await upsert_source_state(
+        source_url=doc.url,
+        source_hash=source_hash,
+        parent_count=stats["parents"],
+        child_count=stats["children"],
     )
     await update_job_progress(
         job["job_id"],
@@ -374,13 +430,42 @@ async def _run_file_job(job: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("No text payload found for file ingestion job")
     await append_job_log(job["job_id"], f"Processing uploaded file: {filename}")
     await append_job_log(job["job_id"], f"Extracted {len(text)} chars")
+    source_url = f"file://{filename}"
+    source_hash = canonical_source_hash(text)
+    prev_state = await get_source_state(source_url) if _should_skip_unchanged(job) else None
+    if prev_state and prev_state.get("source_hash") == source_hash:
+        await append_job_log(
+            job["job_id"],
+            "Dedup: file content unchanged; skipping re-ingestion.",
+        )
+        await update_job_progress(
+            job["job_id"],
+            {
+                "phase": "completed",
+                "completion": 100,
+                "dedup_skipped": True,
+                "dedup_mode": _dedup_mode(job),
+                "stats": {
+                    "parents": int(prev_state.get("last_parent_count", 0)),
+                    "children": int(prev_state.get("last_child_count", 0)),
+                    "title": filename,
+                    "document_type": "unchanged",
+                },
+            },
+        )
+        return {
+            "parents": int(prev_state.get("last_parent_count", 0)),
+            "children": int(prev_state.get("last_child_count", 0)),
+            "title": filename,
+            "document_type": "unchanged",
+        }
     await update_job_progress(
         job["job_id"],
         {
             "phase": "processing",
             "completion": 35,
             "current_title": filename,
-            "current_url": f"file://{filename}",
+            "current_url": source_url,
             "total_docs": 1,
         },
     )
@@ -388,11 +473,17 @@ async def _run_file_job(job: dict[str, Any]) -> dict[str, Any]:
     stats = await _process_document(
         job_id=job["job_id"],
         content=text,
-        source_url=f"file://{filename}",
+        source_url=source_url,
         source_title=filename,
         section="uploaded",
         current_doc=1,
         total_docs=1,
+    )
+    await upsert_source_state(
+        source_url=source_url,
+        source_hash=source_hash,
+        parent_count=stats["parents"],
+        child_count=stats["children"],
     )
     await update_job_progress(
         job["job_id"],
@@ -443,12 +534,22 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
         },
     )
 
-    all_docs = []
+    all_docs: list[tuple[Any, str]] = []
+    dedup_skips = 0
     for idx, url in enumerate(all_urls):
         await append_job_log(job["job_id"], f"Crawling [{idx + 1}/{total_docs}] {url}")
         try:
             doc = await crawl_url(url, use_cache=True)
-            all_docs.append(doc)
+            source_hash = canonical_source_hash(doc.content)
+            prev_state = await get_source_state(doc.url) if _should_skip_unchanged(job) else None
+            if prev_state and prev_state.get("source_hash") == source_hash:
+                dedup_skips += 1
+                await append_job_log(
+                    job["job_id"],
+                    f"Dedup skip [{idx + 1}/{total_docs}] unchanged content for {doc.url}",
+                )
+            else:
+                all_docs.append((doc, source_hash))
             crawled_docs += 1
             await append_job_log(job["job_id"], f"Crawled [{crawled_docs}/{total_docs}] {doc.title[:90]}")
         except Exception as exc:
@@ -465,26 +566,31 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
                 "failed_crawls": failed_crawls,
                 "completion": round((crawled_docs / max(total_docs, 1)) * 50, 1),
                 "current_url": url,
+                "dedup_skips": dedup_skips,
             },
         )
 
     if resume_index > 0:
         await append_job_log(
             job["job_id"],
-            f"Resuming corpus ingest at doc {min(resume_index + 1, total_docs)}/{total_docs}.",
+            (
+                f"Resuming corpus ingest from checkpoint {min(resume_index + 1, total_docs)}/{total_docs}; "
+                "source-hash dedup will decide what still needs processing."
+            ),
         )
+        # Resume index was based on a previous ordered crawl list.
+        # Source-hash dedup is now the canonical resume mechanism.
+        resume_index = 0
 
     await append_job_log(job["job_id"], f"Processing {len(all_docs)} crawled docs...")
 
-    for idx, doc in enumerate(all_docs):
+    for idx, (doc, source_hash) in enumerate(all_docs):
         fresh = await get_job(job["job_id"])
         fresh_progress = (fresh or {}).get("progress", {})
         if fresh_progress.get("pause_requested"):
             await append_job_log(job["job_id"], "Pause requested. Checkpoint saved; job paused.")
             raise PauseRequested()
 
-        if idx < resume_index:
-            continue
         await append_job_log(job["job_id"], f"Processing [{idx + 1}/{len(all_docs)}] {doc.title[:90]}")
         stats = await _process_document(
             job_id=job["job_id"],
@@ -494,6 +600,12 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
             section=doc.section,
             current_doc=idx + 1,
             total_docs=len(all_docs),
+        )
+        await upsert_source_state(
+            source_url=doc.url,
+            source_hash=source_hash,
+            parent_count=stats["parents"],
+            child_count=stats["children"],
         )
         total_parents += stats["parents"]
         total_children += stats["children"]
@@ -513,6 +625,7 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
                     "children": total_children,
                     "crawled_docs": crawled_docs,
                     "failed_crawls": failed_crawls,
+                    "dedup_skips": dedup_skips,
                 }
             },
         )
@@ -524,7 +637,7 @@ async def _run_corpus_job(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "parents": total_parents,
         "children": total_children,
-        "title": f"IRS Corpus ({pages} docs)",
+        "title": f"IRS Corpus ({pages} processed, {dedup_skips} skipped)",
         "document_type": "mixed",
     }
 
@@ -533,7 +646,22 @@ async def process_job(job: dict[str, Any], worker_id: str) -> None:
     job_id = job["job_id"]
     await append_job_log(job_id, f"Worker {worker_id} picked up job.")
     try:
+        await append_job_log(
+            job_id,
+            f"Chunk config: size={settings.chunk_size}, overlap={settings.chunk_overlap}",
+        )
+        await append_job_log(job_id, f"Dedup mode: {_dedup_mode(job)}")
         await update_job_progress(job_id, {"phase": "starting", "completion": 2})
+        await update_job_progress(
+            job_id,
+            {
+                "chunk_config": {
+                    "chunk_size": settings.chunk_size,
+                    "chunk_overlap": settings.chunk_overlap,
+                },
+                "dedup_mode": _dedup_mode(job),
+            },
+        )
         if job["job_type"] == "url":
             stats = await _run_url_job(job)
         elif job["job_type"] == "file":
