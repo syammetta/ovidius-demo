@@ -59,6 +59,19 @@ async def get_eval_run(run_id: str):
     }
 
 
+@router.delete("/runs/{run_id}")
+async def delete_eval_run(run_id: str):
+    """Delete an eval run and all its results (CASCADE)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "DELETE FROM eval_runs WHERE run_id = $1 RETURNING run_id", run_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Eval run not found")
+    return {"deleted": run_id}
+
+
 @router.get("/results")
 async def get_eval_results(
     run_id: str | None = None,

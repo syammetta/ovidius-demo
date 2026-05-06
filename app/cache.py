@@ -43,8 +43,23 @@ async def get_client() -> redis.Redis | None:
     return _client
 
 
+async def close_client() -> None:
+    """Close the shared Redis client (call during app shutdown)."""
+    global _client
+    if _client:
+        await _client.aclose()
+        _client = None
+
+
 def _hash_key(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:24]
+
+
+def _embedding_key(text: str) -> str:
+    """Cache key for embeddings — includes model name so a model change auto-invalidates."""
+    return EMBEDDING_PREFIX + hashlib.sha256(
+        f"{settings.embedding_model}:{text}".encode()
+    ).hexdigest()[:24]
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +72,7 @@ async def get_cached_embedding(text: str) -> list[float] | None:
     if not client:
         return None
     try:
-        key = EMBEDDING_PREFIX + _hash_key(text)
-        raw = await client.get(key)
+        raw = await client.get(_embedding_key(text))
         if raw:
             return json.loads(raw)
     except Exception:
@@ -73,7 +87,7 @@ async def get_cached_embeddings(texts: list[str]) -> dict[int, list[float]]:
         return {}
 
     try:
-        keys = [EMBEDDING_PREFIX + _hash_key(t) for t in texts]
+        keys = [_embedding_key(t) for t in texts]
         values = await client.mget(keys)
         hits = {}
         for i, val in enumerate(values):
@@ -93,8 +107,7 @@ async def cache_embeddings(texts: list[str], embeddings: list[list[float]]) -> N
     try:
         pipe = client.pipeline(transaction=False)
         for text, emb in zip(texts, embeddings):
-            key = EMBEDDING_PREFIX + _hash_key(text)
-            pipe.setex(key, EMBEDDING_TTL, json.dumps(emb))
+            pipe.setex(_embedding_key(text), EMBEDDING_TTL, json.dumps(emb))
         await pipe.execute()
     except Exception as e:
         logger.debug("Failed to cache embeddings: %s", e)
@@ -155,34 +168,20 @@ async def invalidate_responses() -> None:
 # ---------------------------------------------------------------------------
 
 async def get_cache_stats() -> dict[str, Any] | None:
-    """Return cache hit/miss counts and key counts."""
+    """Return lightweight cache stats (O(1) — no SCAN)."""
     client = await get_client()
     if not client:
         return None
     try:
         info = await client.info("stats")
-        dbinfo = await client.info("keyspace")
-        emb_count = 0
-        resp_count = 0
-        cursor = 0
-        while True:
-            cursor, keys = await client.scan(cursor, match=EMBEDDING_PREFIX + "*", count=500)
-            emb_count += len(keys)
-            if cursor == 0:
-                break
-        cursor = 0
-        while True:
-            cursor, keys = await client.scan(cursor, match=RESPONSE_PREFIX + "*", count=500)
-            resp_count += len(keys)
-            if cursor == 0:
-                break
+        info_mem = await client.info("memory")
+        total_keys = await client.dbsize()
         return {
             "connected": True,
-            "embedding_keys": emb_count,
-            "response_keys": resp_count,
+            "total_keys": total_keys,
             "hits": info.get("keyspace_hits", 0),
             "misses": info.get("keyspace_misses", 0),
-            "used_memory_human": info.get("used_memory_human", "unknown"),
+            "used_memory_human": info_mem.get("used_memory_human", "unknown"),
         }
     except Exception:
         return {"connected": False}

@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ingestUrl, ingestFile, ingestCorpus, fetchIngestTasks, fetchIngestTask } from "../api";
+import {
+  ingestUrl,
+  ingestFile,
+  ingestCorpus,
+  fetchIngestTasks,
+  fetchIngestTask,
+  pauseIngestTask,
+  resumeIngestTask,
+} from "../api";
 import type { IngestTask } from "../api";
+
+const PIPELINE_STEPS = [
+  { key: "classify_metadata", label: "Classify Metadata" },
+  { key: "chunking", label: "Chunk" },
+  { key: "contextualizing", label: "Context" },
+  { key: "storing_parents", label: "Store Parents" },
+  { key: "embedding_children", label: "Embed Children" },
+] as const;
 
 export default function IngestPage() {
   const [url, setUrl] = useState("");
@@ -9,6 +25,7 @@ export default function IngestPage() {
   const [tasks, setTasks] = useState<IngestTask[]>([]);
   const [dragging, setDragging] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [taskAction, setTaskAction] = useState<Record<string, "pause" | "resume" | undefined>>({});
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -34,7 +51,7 @@ export default function IngestPage() {
       try {
         const fresh = await fetchIngestTasks();
         setTasks(fresh);
-        const stillRunning = fresh.some((t) => t.status === "running");
+        const stillRunning = fresh.some((t) => t.status === "running" || t.status === "queued");
         if (!stillRunning && pollingRef.current) {
           clearInterval(pollingRef.current);
           pollingRef.current = null;
@@ -111,9 +128,70 @@ export default function IngestPage() {
   const statusColor = (s: string) =>
     s === "completed"
       ? "bg-[var(--green-light)] text-[var(--green)]"
+      : s === "paused"
+        ? "bg-[var(--yellow-light)] text-[var(--yellow)]"
       : s === "failed"
         ? "bg-[var(--red-light)] text-[var(--red)]"
         : "bg-[var(--accent-light)] text-[var(--accent)]";
+
+  const getTaskProgress = (task: IngestTask) => {
+    const p = task.progress || {};
+    const cp = p.corpus_progress || {};
+    const total = p.total_docs ?? cp.total_docs ?? 0;
+    const crawled = p.crawled_docs ?? cp.crawled_docs ?? 0;
+    const processed = p.processed_docs ?? cp.processed_docs ?? 0;
+    const completion = Math.max(0, Math.min(100, p.completion ?? (task.status === "completed" ? 100 : 0)));
+    return {
+      phase: p.phase || "pending",
+      completion,
+      total,
+      crawled,
+      processed,
+      failed: p.failed_crawls ?? cp.failed_crawls ?? 0,
+      currentTitle: p.current_title || "",
+      currentUrl: p.current_url || "",
+      currentDoc: p.current_doc ?? cp.next_index ?? 0,
+      pipelineStage: p.pipeline_stage || "",
+      pipelineSteps: p.pipeline_steps || {},
+      metadata: p.metadata_labels || null,
+    };
+  };
+
+  const stepClass = (status: string) =>
+    status === "complete"
+      ? "bg-[var(--green-light)] text-[var(--green)] border-[var(--green)]/20"
+      : status === "running"
+        ? "bg-[var(--accent-light)] text-[var(--accent)] border-[var(--accent)]/25"
+      : status === "skipped"
+        ? "bg-[var(--bg-tertiary)] text-[var(--text-muted)] border-[var(--border)]"
+        : "bg-[var(--surface)] text-[var(--text-muted)] border-[var(--border-light)]";
+
+  async function handlePauseTask(taskId: string) {
+    setTaskAction((prev) => ({ ...prev, [taskId]: "pause" }));
+    setUploadError("");
+    try {
+      const updated = await pauseIngestTask(taskId);
+      setTasks((prev) => prev.map((t) => (t.task_id === taskId ? updated : t)));
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Failed to pause task");
+    } finally {
+      setTaskAction((prev) => ({ ...prev, [taskId]: undefined }));
+    }
+  }
+
+  async function handleResumeTask(taskId: string) {
+    setTaskAction((prev) => ({ ...prev, [taskId]: "resume" }));
+    setUploadError("");
+    try {
+      const updated = await resumeIngestTask(taskId);
+      setTasks((prev) => prev.map((t) => (t.task_id === taskId ? updated : t)));
+      startPolling();
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Failed to resume task");
+    } finally {
+      setTaskAction((prev) => ({ ...prev, [taskId]: undefined }));
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -293,7 +371,7 @@ export default function IngestPage() {
                       </span>
                       <span className="text-xs text-[var(--text)] truncate flex-1">{task.url}</span>
                       <span className="text-[10px] font-mono text-[var(--text-muted)]">{task.task_id}</span>
-                      {task.status === "running" && (
+                      {(task.status === "running" || task.status === "queued") && (
                         <button
                           onClick={() => refreshTask(task.task_id)}
                           className="text-[10px] text-[var(--accent)] hover:underline"
@@ -301,7 +379,95 @@ export default function IngestPage() {
                           refresh
                         </button>
                       )}
+                      {(task.status === "running" || task.status === "queued") && (
+                        <button
+                          onClick={() => handlePauseTask(task.task_id)}
+                          disabled={taskAction[task.task_id] === "pause"}
+                          className="text-[10px] text-[var(--yellow)] hover:underline disabled:opacity-50"
+                        >
+                          {taskAction[task.task_id] === "pause" ? "stopping..." : "stop"}
+                        </button>
+                      )}
+                      {task.status === "paused" && (
+                        <button
+                          onClick={() => handleResumeTask(task.task_id)}
+                          disabled={taskAction[task.task_id] === "resume"}
+                          className="text-[10px] text-[var(--accent)] hover:underline disabled:opacity-50"
+                        >
+                          {taskAction[task.task_id] === "resume" ? "resuming..." : "resume"}
+                        </button>
+                      )}
                     </div>
+
+                    {(() => {
+                      const prog = getTaskProgress(task);
+                      const showProgress = task.status === "running" || task.status === "queued" || task.status === "paused" || task.status === "completed";
+                      if (!showProgress) return null;
+                      return (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
+                            <span className="capitalize">{prog.phase}</span>
+                            <span>{prog.completion.toFixed(0)}%</span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+                            <div
+                              className="h-full bg-[var(--accent)] transition-all duration-300"
+                              style={{ width: `${prog.completion}%` }}
+                            />
+                          </div>
+                          {(prog.total > 0 || prog.currentTitle || prog.currentUrl) && (
+                            <div className="text-[11px] text-[var(--text-muted)] space-y-0.5">
+                              {prog.total > 0 && (
+                                <p>
+                                  crawled {prog.crawled}/{prog.total} · processed {prog.processed}/{prog.total}
+                                  {prog.failed > 0 ? ` · failed ${prog.failed}` : ""}
+                                </p>
+                              )}
+                              {prog.currentDoc > 0 && prog.total > 0 && (
+                                <p>active doc: {Math.min(prog.currentDoc, prog.total)}/{prog.total}</p>
+                              )}
+                              {prog.currentTitle && <p className="truncate">current: {prog.currentTitle}</p>}
+                              {!prog.currentTitle && prog.currentUrl && <p className="truncate">current: {prog.currentUrl}</p>}
+                            </div>
+                          )}
+                          {prog.metadata && (
+                            <div className="pt-1 text-[11px] text-[var(--text-muted)] space-y-0.5">
+                              <p>
+                                labels: type=<span className="text-[var(--text-secondary)]">{prog.metadata.doc_type || "-"}</span>
+                                {" "}section=<span className="text-[var(--text-secondary)]">{prog.metadata.section || "-"}</span>
+                                {" "}via {prog.metadata.llm_used ? "LLM" : "heuristics"}
+                              </p>
+                              {!!prog.metadata.tax_topics?.length && (
+                                <p className="truncate">topics: {prog.metadata.tax_topics.join(", ")}</p>
+                              )}
+                              {!!prog.metadata.metadata_tags?.length && (
+                                <p className="truncate">tags: {prog.metadata.metadata_tags.join(", ")}</p>
+                              )}
+                            </div>
+                          )}
+                          {!!prog.pipelineStage && (
+                            <div className="pt-1 space-y-1.5">
+                              <p className="text-[11px] text-[var(--text-muted)]">
+                                pipeline stage: <span className="font-medium text-[var(--text-secondary)]">{prog.pipelineStage}</span>
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {PIPELINE_STEPS.map(({ key, label }) => {
+                                  const state = prog.pipelineSteps[key] || "pending";
+                                  return (
+                                    <span
+                                      key={key}
+                                      className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${stepClass(state)}`}
+                                    >
+                                      {label}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* Stats */}
                     {task.stats && (

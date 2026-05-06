@@ -133,6 +133,24 @@ export async function ingestCorpus() {
   return res.json() as Promise<{ task_id: string; status: string }>;
 }
 
+export async function pauseIngestTask(taskId: string) {
+  const res = await fetch(`/api/ingest/tasks/${encodeURIComponent(taskId)}/pause`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to pause task" }));
+    throw new Error(err.detail || "Failed to pause task");
+  }
+  return res.json() as Promise<IngestTask>;
+}
+
+export async function resumeIngestTask(taskId: string) {
+  const res = await fetch(`/api/ingest/tasks/${encodeURIComponent(taskId)}/resume`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to resume task" }));
+    throw new Error(err.detail || "Failed to resume task");
+  }
+  return res.json() as Promise<IngestTask>;
+}
+
 export async function ingestFile(file: File) {
   const form = new FormData();
   form.append("file", file);
@@ -194,9 +212,44 @@ export interface ChunkDetail {
 
 export interface IngestTask {
   task_id: string;
-  status: "running" | "completed" | "failed";
+  status: "queued" | "running" | "paused" | "completed" | "failed";
   url: string;
   stats: { parents: number; children: number; title?: string; document_type?: string } | null;
+  progress: {
+    phase?: string;
+    pipeline_stage?: string;
+    pipeline_steps?: {
+      classify_metadata?: "pending" | "running" | "complete" | "skipped";
+      chunking?: "pending" | "running" | "complete" | "skipped";
+      contextualizing?: "pending" | "running" | "complete" | "skipped";
+      storing_parents?: "pending" | "running" | "complete" | "skipped";
+      embedding_children?: "pending" | "running" | "complete" | "skipped";
+    };
+    metadata_labels?: {
+      doc_type?: string;
+      section?: string;
+      tax_topics?: string[];
+      metadata_tags?: string[];
+      llm_used?: boolean;
+    };
+    completion?: number;
+    total_docs?: number;
+    current_doc?: number;
+    crawled_docs?: number;
+    processed_docs?: number;
+    failed_crawls?: number;
+    current_url?: string;
+    current_title?: string;
+    corpus_progress?: {
+      next_index?: number;
+      processed_docs?: number;
+      total_docs?: number;
+      parents?: number;
+      children?: number;
+      crawled_docs?: number;
+      failed_crawls?: number;
+    };
+  } | null;
   error: string | null;
   logs: string[];
 }
@@ -256,4 +309,9 @@ export async function fetchEvalSummary(): Promise<EvalSummary | null> {
   const res = await fetch("/eval/summary");
   if (!res.ok) return null;
   return res.json();
+}
+
+export async function deleteEvalRun(runId: string): Promise<void> {
+  const res = await fetch(`/eval/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete eval run");
 }

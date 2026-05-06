@@ -7,6 +7,7 @@ Key bugs to catch:
 - Relevance parsing edge cases ("relevant" vs "irrelevant" vs garbage)
 """
 
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 from app.retrieval.corrective import (
@@ -16,15 +17,20 @@ from app.retrieval.corrective import (
 from tests.conftest import make_chunk
 
 
-def _mock_anthropic_relevant(n_relevant: int, n_total: int):
-    """Create a mock that returns 'relevant' for first n, 'irrelevant' for rest."""
+def _mock_batch_response(n_relevant: int, n_total: int):
+    """Create a mock client whose single batch call returns JSON verdicts."""
     client = MagicMock()
-    responses = []
-    for i in range(n_total):
-        resp = MagicMock()
-        resp.content = [MagicMock(text="relevant" if i < n_relevant else "irrelevant")]
-        responses.append(resp)
-    client.messages.create.side_effect = responses
+    verdicts = {}
+    for i in range(1, n_total + 1):
+        verdicts[str(i)] = "relevant" if i <= n_relevant else "irrelevant"
+
+    batch_resp = MagicMock()
+    batch_resp.content = [MagicMock(text=json.dumps(verdicts))]
+
+    transform_resp = MagicMock()
+    transform_resp.content = [MagicMock(text="rewritten query about taxes")]
+
+    client.messages.create.side_effect = [batch_resp, transform_resp]
     return client
 
 
@@ -33,7 +39,7 @@ class TestEvaluateRetrieval:
     async def test_confident_when_most_relevant(self):
         chunks = [make_chunk(chunk_id=f"c{i}") for i in range(5)]
         with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
-            mock.return_value = _mock_anthropic_relevant(4, 5)
+            mock.return_value = _mock_batch_response(4, 5)
             result = await evaluate_retrieval("test query", chunks)
 
         assert result.confidence == RetrievalConfidence.CONFIDENT
@@ -44,7 +50,7 @@ class TestEvaluateRetrieval:
     async def test_uncertain_when_mixed(self):
         chunks = [make_chunk(chunk_id=f"c{i}") for i in range(5)]
         with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
-            mock.return_value = _mock_anthropic_relevant(2, 5)
+            mock.return_value = _mock_batch_response(2, 5)
             result = await evaluate_retrieval("test query", chunks)
 
         assert result.confidence == RetrievalConfidence.UNCERTAIN
@@ -53,13 +59,7 @@ class TestEvaluateRetrieval:
     async def test_low_confidence_when_mostly_irrelevant(self):
         chunks = [make_chunk(chunk_id=f"c{i}") for i in range(5)]
         with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
-            client = _mock_anthropic_relevant(1, 5)
-            # Add response for query transformation
-            transform_resp = MagicMock()
-            transform_resp.content = [MagicMock(text="rewritten query about taxes")]
-            client.messages.create.side_effect = list(client.messages.create.side_effect) + [transform_resp]
-            mock.return_value = client
-
+            mock.return_value = _mock_batch_response(1, 5)
             result = await evaluate_retrieval("test query", chunks)
 
         assert result.confidence == RetrievalConfidence.LOW_CONFIDENCE
@@ -73,8 +73,8 @@ class TestEvaluateRetrieval:
         assert result.original_count == 0
 
     @pytest.mark.asyncio
-    async def test_api_error_defaults_to_relevant(self):
-        """If the relevance check fails, keep the chunk (fail open)."""
+    async def test_api_error_defaults_to_all_relevant(self):
+        """If the relevance check fails, keep all chunks (fail open) — confident."""
         chunks = [make_chunk(chunk_id="c0")]
         with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
             client = MagicMock()
@@ -84,13 +84,14 @@ class TestEvaluateRetrieval:
             result = await evaluate_retrieval("test query", chunks)
 
         assert len(result.chunks) > 0
+        assert result.confidence == RetrievalConfidence.CONFIDENT
 
     @pytest.mark.asyncio
     async def test_exact_boundary_60_percent(self):
         """60% relevance should be confident (threshold is 0.6)."""
         chunks = [make_chunk(chunk_id=f"c{i}") for i in range(5)]
         with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
-            mock.return_value = _mock_anthropic_relevant(3, 5)
+            mock.return_value = _mock_batch_response(3, 5)
             result = await evaluate_retrieval("test query", chunks)
 
         assert result.confidence == RetrievalConfidence.CONFIDENT
@@ -100,7 +101,7 @@ class TestEvaluateRetrieval:
         """30% relevance should be uncertain (>= 0.3)."""
         chunks = [make_chunk(chunk_id=f"c{i}") for i in range(10)]
         with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
-            mock.return_value = _mock_anthropic_relevant(3, 10)
+            mock.return_value = _mock_batch_response(3, 10)
             result = await evaluate_retrieval("test query", chunks)
 
         assert result.confidence == RetrievalConfidence.UNCERTAIN
@@ -110,12 +111,25 @@ class TestEvaluateRetrieval:
         """Even at low confidence, should return at least some chunks."""
         chunks = [make_chunk(chunk_id=f"c{i}") for i in range(5)]
         with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
-            client = _mock_anthropic_relevant(0, 5)
-            transform_resp = MagicMock()
-            transform_resp.content = [MagicMock(text="rewritten query")]
-            client.messages.create.side_effect = list(client.messages.create.side_effect) + [transform_resp]
+            mock.return_value = _mock_batch_response(0, 5)
+            result = await evaluate_retrieval("test query", chunks)
+
+        assert len(result.chunks) > 0, "Should return fallback chunks even when all irrelevant"
+
+    @pytest.mark.asyncio
+    async def test_json_with_code_fence(self):
+        """Handle LLM wrapping JSON in code fences."""
+        chunks = [make_chunk(chunk_id=f"c{i}") for i in range(3)]
+        with patch("app.retrieval.corrective.anthropic.Anthropic") as mock:
+            client = MagicMock()
+            verdicts = {"1": "relevant", "2": "relevant", "3": "irrelevant"}
+            fenced = f'```json\n{json.dumps(verdicts)}\n```'
+            resp = MagicMock()
+            resp.content = [MagicMock(text=fenced)]
+            client.messages.create.return_value = resp
             mock.return_value = client
 
             result = await evaluate_retrieval("test query", chunks)
 
-        assert len(result.chunks) > 0, "Should return fallback chunks even when all irrelevant"
+        assert result.filtered_count == 2
+        assert result.confidence == RetrievalConfidence.CONFIDENT

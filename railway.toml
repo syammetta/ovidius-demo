@@ -3,7 +3,7 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "sh -c 'echo \"[startup] ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) port=${PORT}\"; python scripts/migrate.py; echo \"[startup] launching uvicorn\"; uvicorn app.api.routes:app --host 0.0.0.0 --port ${PORT}'"
+startCommand = "sh -c 'echo \"[startup] ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) mode=${SERVICE_MODE:-web} port=${PORT}\"; if [ \"${SERVICE_MODE:-web}\" = \"worker\" ]; then echo \"[startup] launching worker service\"; uvicorn app.ingestion.worker_service:app --host 0.0.0.0 --port ${PORT}; else echo \"[startup] launching uvicorn\"; uvicorn app.api.routes:app --host 0.0.0.0 --port ${PORT}; fi'"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "on_failure"

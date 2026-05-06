@@ -17,7 +17,7 @@ from app.ingestion.job_queue import recover_stale_running_jobs
 from app.ingestion.worker import resume_queued_jobs_inline
 from app.retrieval.context_builder import retrieve
 from app.generation.answerer import generate_answer
-from app.cache import get_cached_response, cache_response, get_cache_stats
+from app.cache import get_cached_response, cache_response, get_cache_stats, close_client as close_redis
 from app.agent.routes import router as agent_router
 from app.api.eval_routes import router as eval_router
 from app.api.doc_routes import router as doc_router
@@ -51,6 +51,7 @@ async def lifespan(app: FastAPI):
     inline_task = getattr(app.state, "inline_ingestion_task", None)
     if inline_task and not inline_task.done():
         inline_task.cancel()
+    await close_redis()
     await close_pool()
 
 
@@ -73,7 +74,7 @@ def _is_demo_authorized(request: Request) -> bool:
 
 def _render_demo_landing(error: str = "") -> HTMLResponse:
     error_html = (
-        f'<p style="color:#fecaca;font-size:13px;margin:0 0 12px 0;padding:10px 12px;border:1px solid rgba(248,113,113,0.45);background:rgba(127,29,29,0.35);border-radius:10px;">{error}</p>'
+        f'<div class="error">{error}</div>'
         if error
         else ""
     )
@@ -82,183 +83,376 @@ def _render_demo_landing(error: str = "") -> HTMLResponse:
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Ovidius Demo Access</title>
+    <title>Ovidius &mdash; Documentation QA Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <style>
+      *,*::before,*::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
       body {{
-        margin: 0;
         font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: radial-gradient(1200px 700px at 12% 10%, #1e3a8a 0%, rgba(30, 58, 138, 0) 55%),
-                    radial-gradient(1000px 600px at 90% 90%, #4f46e5 0%, rgba(79, 70, 229, 0) 50%),
-                    linear-gradient(145deg, #050816 0%, #0b1224 45%, #121a2f 100%);
-        color: #e2e8f0;
+        background: #fafbfc;
+        color: #1a1a2e;
+        -webkit-font-smoothing: antialiased;
       }}
-      .wrap {{
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 28px;
+
+      /* --- NAV --- */
+      .nav {{
+        position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 16px 32px;
+        background: rgba(255,255,255,0.85);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid #e8ecf1;
       }}
-      .card {{
-        width: 100%;
-        max-width: 740px;
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        border-radius: 18px;
-        overflow: hidden;
-        background: linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.75));
-        box-shadow: 0 30px 80px rgba(2, 6, 23, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(6px);
+      .nav-brand {{
+        display: flex; align-items: center; gap: 10px;
+        font-size: 17px; font-weight: 700; color: #1a1a2e;
+        text-decoration: none;
       }}
+      .nav-brand svg {{ color: #4361ee; }}
+      .nav-tag {{
+        font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+        padding: 3px 10px; border-radius: 999px;
+        background: #eef2ff; color: #4361ee;
+      }}
+
+      /* --- HERO --- */
       .hero {{
-        padding: 30px 30px 20px 30px;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+        padding: 120px 32px 64px;
+        text-align: center;
         background:
-          radial-gradient(700px 180px at -10% 0%, rgba(59, 130, 246, 0.35), rgba(59, 130, 246, 0)),
-          radial-gradient(600px 160px at 105% 10%, rgba(99, 102, 241, 0.4), rgba(99, 102, 241, 0));
+          radial-gradient(ellipse 800px 500px at 50% 0%, rgba(67,97,238,0.08), transparent),
+          radial-gradient(ellipse 600px 400px at 80% 100%, rgba(114,9,183,0.05), transparent);
       }}
-      .badge {{
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 11px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        color: #bfdbfe;
-        border: 1px solid rgba(96, 165, 250, 0.4);
-        background: rgba(37, 99, 235, 0.18);
+      .hero-badge {{
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 14px; border-radius: 999px;
+        font-size: 12px; font-weight: 600;
+        color: #4361ee; background: #eef2ff;
+        border: 1px solid #dbe4ff;
+        margin-bottom: 20px;
       }}
-      h1 {{
-        margin: 14px 0 8px 0;
-        font-size: 33px;
-        line-height: 1.15;
-        color: #f8fafc;
-        letter-spacing: -0.02em;
+      .hero-badge .dot {{
+        width: 6px; height: 6px; border-radius: 50%;
+        background: #4361ee;
+        animation: pulse 2s ease-in-out infinite;
       }}
-      p {{
-        margin: 0 0 14px 0;
-        color: #cbd5e1;
+      @keyframes pulse {{
+        0%,100% {{ opacity: 1; }} 50% {{ opacity: 0.4; }}
       }}
-      ul {{
-        margin: 14px 0 0 0;
-        padding: 0;
-        list-style: none;
-        display: grid;
-        gap: 8px;
+      .hero h1 {{
+        font-size: clamp(32px, 5vw, 48px);
+        font-weight: 700; line-height: 1.15;
+        letter-spacing: -0.03em;
+        color: #1a1a2e;
+        max-width: 720px; margin: 0 auto 16px;
       }}
-      li {{
-        display: flex;
-        align-items: flex-start;
-        gap: 10px;
-        color: #dbeafe;
-        font-size: 14px;
+      .hero h1 span {{ color: #4361ee; }}
+      .hero p {{
+        font-size: 17px; line-height: 1.65;
+        color: #64748b; max-width: 580px; margin: 0 auto;
       }}
-      li::before {{
-        content: "✦";
-        color: #93c5fd;
-        margin-top: 1px;
+
+      /* --- PIPELINE --- */
+      .pipeline-section {{
+        padding: 0 32px 56px;
+        max-width: 900px; margin: 0 auto;
       }}
-      .form {{
-        padding: 22px 30px 28px 30px;
+      .pipeline-label {{
+        text-align: center;
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.08em; color: #94a3b8; margin-bottom: 20px;
       }}
-      .label {{
-        display: block;
-        margin-bottom: 8px;
-        font-size: 12px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: #94a3b8;
-        font-weight: 600;
+      .pipeline {{
+        display: flex; align-items: center; justify-content: center;
+        gap: 0; flex-wrap: wrap;
       }}
-      input {{
+      .pipe-step {{
+        display: flex; align-items: center; gap: 0;
+      }}
+      .pipe-node {{
+        padding: 8px 16px; border-radius: 10px;
+        font-size: 12px; font-weight: 600;
+        white-space: nowrap;
+        border: 1px solid #e2e8f0;
+        background: white;
+        color: #334155;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      }}
+      .pipe-arrow {{
+        color: #cbd5e1; font-size: 16px;
+        padding: 0 4px;
+        display: flex; align-items: center;
+      }}
+      .pipe-arrow svg {{ width: 16px; height: 16px; }}
+
+      /* --- OPTIONS GRID --- */
+      .options {{
+        max-width: 960px; margin: 0 auto;
+        padding: 0 32px 56px;
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+      }}
+      .opt-card {{
+        border: 1px solid #e8ecf1;
+        border-radius: 14px;
+        padding: 24px;
+        background: white;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+        transition: box-shadow 180ms ease, transform 180ms ease;
+      }}
+      .opt-card:hover {{
+        box-shadow: 0 6px 24px rgba(0,0,0,0.06);
+        transform: translateY(-2px);
+      }}
+      .opt-letter {{
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 28px; height: 28px; border-radius: 8px;
+        font-size: 13px; font-weight: 700;
+        margin-bottom: 12px;
+      }}
+      .opt-a {{ background: #eef2ff; color: #4361ee; }}
+      .opt-b {{ background: #f0fdf4; color: #16a34a; }}
+      .opt-c {{ background: #fef3c7; color: #d97706; }}
+      .opt-card h3 {{
+        font-size: 15px; font-weight: 600; color: #1a1a2e;
+        margin-bottom: 6px;
+      }}
+      .opt-card p {{
+        font-size: 13px; line-height: 1.55; color: #64748b;
+      }}
+      .opt-card .opt-detail {{
+        margin-top: 10px; padding-top: 10px;
+        border-top: 1px solid #f1f5f9;
+        font-size: 12px; color: #94a3b8;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }}
+
+      /* --- TECH STRIP --- */
+      .tech-strip {{
+        max-width: 720px; margin: 0 auto;
+        padding: 0 32px 48px;
+        display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;
+      }}
+      .tech-chip {{
+        padding: 5px 12px; border-radius: 8px;
+        font-size: 12px; font-weight: 500;
+        background: #f8fafc; color: #475569;
+        border: 1px solid #e2e8f0;
+      }}
+
+      /* --- ACCESS CARD --- */
+      .access-section {{
+        max-width: 440px; margin: 0 auto;
+        padding: 0 32px 80px;
+      }}
+      .access-card {{
+        border: 1px solid #e8ecf1;
+        border-radius: 16px;
+        padding: 32px;
+        background: white;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.04);
+        text-align: center;
+      }}
+      .access-card .lock-icon {{
+        width: 40px; height: 40px; border-radius: 12px;
+        background: #eef2ff;
+        display: inline-flex; align-items: center; justify-content: center;
+        margin-bottom: 16px;
+      }}
+      .access-card .lock-icon svg {{
+        width: 20px; height: 20px; color: #4361ee;
+      }}
+      .access-card h2 {{
+        font-size: 18px; font-weight: 600; color: #1a1a2e;
+        margin-bottom: 4px;
+      }}
+      .access-card .subtitle {{
+        font-size: 13px; color: #94a3b8; margin-bottom: 20px;
+      }}
+      .access-card input {{
         width: 100%;
-        box-sizing: border-box;
-        border: 1px solid rgba(148, 163, 184, 0.45);
-        border-radius: 12px;
-        padding: 13px 14px;
-        font-size: 14px;
-        margin-bottom: 14px;
-        color: #e2e8f0;
-        background: rgba(15, 23, 42, 0.55);
+        border: 1.5px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 12px 14px;
+        font-size: 15px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 0.12em;
+        text-align: center;
+        color: #1a1a2e;
+        background: #f8fafc;
         outline: none;
-        transition: border-color 120ms ease, box-shadow 120ms ease;
+        transition: border-color 150ms, box-shadow 150ms;
       }}
-      input::placeholder {{
-        color: #64748b;
+      .access-card input::placeholder {{
+        color: #cbd5e1; letter-spacing: 0.06em;
+        font-family: Inter, -apple-system, sans-serif;
+        font-size: 13px;
       }}
-      input:focus {{
-        border-color: #60a5fa;
-        box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
+      .access-card input:focus {{
+        border-color: #4361ee;
+        box-shadow: 0 0 0 3px rgba(67,97,238,0.12);
+        background: white;
       }}
-      button {{
+      .access-card button {{
+        width: 100%;
+        margin-top: 12px;
         border: none;
-        border-radius: 12px;
-        background: linear-gradient(180deg, #3b82f6, #2563eb);
-        color: #eff6ff;
-        font-size: 14px;
-        font-weight: 600;
-        padding: 11px 18px;
+        border-radius: 10px;
+        padding: 12px;
+        font-size: 14px; font-weight: 600;
+        color: white;
+        background: #4361ee;
         cursor: pointer;
-        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
-        transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+        transition: background 150ms, transform 100ms;
       }}
-      button:hover {{
-        transform: translateY(-1px);
-        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.45);
-      }}
-      button:active {{
-        transform: translateY(0);
-      }}
-      .inline {{
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-      }}
-      .muted {{
+      .access-card button:hover {{ background: #3b55d4; }}
+      .access-card button:active {{ transform: scale(0.98); }}
+      .access-card .footer-note {{
         margin-top: 14px;
-        font-size: 12px;
-        color: #94a3b8;
+        font-size: 11px; color: #94a3b8;
       }}
-      .hint {{
-        color: #60a5fa;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-        font-size: 12px;
-        border: 1px solid rgba(96, 165, 250, 0.35);
-        background: rgba(30, 64, 175, 0.18);
-        padding: 6px 10px;
-        border-radius: 999px;
+      .error {{
+        margin-bottom: 14px;
+        padding: 10px 14px;
+        border-radius: 10px;
+        font-size: 13px;
+        color: #dc2626;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+      }}
+
+      /* --- FOOTER --- */
+      .foot {{
+        text-align: center;
+        padding: 24px 32px;
+        font-size: 12px; color: #94a3b8;
+        border-top: 1px solid #e8ecf1;
+      }}
+      .foot a {{ color: #4361ee; text-decoration: none; }}
+
+      @media (max-width: 640px) {{
+        .nav {{ padding: 12px 20px; }}
+        .hero {{ padding: 100px 20px 48px; }}
+        .pipeline {{ gap: 4px; }}
+        .pipe-node {{ padding: 6px 10px; font-size: 11px; }}
+        .options {{ padding: 0 20px 40px; }}
+        .access-section {{ padding: 0 20px 60px; }}
       }}
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <div class="card">
-        <div class="hero">
-          <span class="badge">Private Preview</span>
-          <h1>Ovidius AI Demo Portal</h1>
-          <p>Explore tax-focused RAG workflows with transparent reasoning, citation-backed answers, and deep observability tooling.</p>
-          <ul>
-            <li>Ask complex tax questions and receive structured, source-cited responses</li>
-            <li>Inspect retrieval, reranking, and generation pipeline health in real time</li>
-            <li>Ingest domain content and validate quality with trace-level visibility</li>
-          </ul>
+
+    <nav class="nav">
+      <a class="nav-brand" href="/demo-access">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          <path d="M2 12h20"/>
+        </svg>
+        Ovidius
+      </a>
+      <span class="nav-tag">Senior AI Builder &mdash; Qualification Project</span>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero-badge"><span class="dot"></span> Live Demo</div>
+      <h1>Production-grade <span>documentation QA</span> on the Anthropic stack</h1>
+      <p>
+        A 6-stage retrieval pipeline that answers IRS tax questions with cited sources,
+        observable reasoning, and measurable quality &mdash; delivered through three interfaces.
+      </p>
+    </section>
+
+    <!-- Pipeline -->
+    <section class="pipeline-section">
+      <div class="pipeline-label">Retrieval Pipeline</div>
+      <div class="pipeline">
+        <div class="pipe-step">
+          <div class="pipe-node">Classify</div>
+          <span class="pipe-arrow"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10m-3-3l3 3-3 3"/></svg></span>
         </div>
-        <div class="form">
-          {error_html}
-          <form method="post" action="/demo-access">
-            <label class="label" for="access_code">Access Code</label>
-            <input id="access_code" type="password" name="access_code" placeholder="Enter your team access code" required />
-            <div class="inline">
-              <button type="submit">Enter Demo</button>
-              <span class="hint">Secure access enabled</span>
-            </div>
-          </form>
-          <p class="muted">Access is restricted. Contact the Ovidius team if you need a demo key.</p>
+        <div class="pipe-step">
+          <div class="pipe-node">Hybrid Search</div>
+          <span class="pipe-arrow"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10m-3-3l3 3-3 3"/></svg></span>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-node">Rerank</div>
+          <span class="pipe-arrow"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10m-3-3l3 3-3 3"/></svg></span>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-node">Corrective RAG</div>
+          <span class="pipe-arrow"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10m-3-3l3 3-3 3"/></svg></span>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-node">Parent Expand</div>
+          <span class="pipe-arrow"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10m-3-3l3 3-3 3"/></svg></span>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-node">Generate + Cite</div>
         </div>
       </div>
+    </section>
+
+    <!-- Three Options -->
+    <section class="options">
+      <div class="opt-card">
+        <div class="opt-letter opt-a">A</div>
+        <h3>Managed Agent</h3>
+        <p>Multi-turn Claude agent with 4 custom tools: knowledge base search, document sections, source comparison, and tax calculations.</p>
+        <div class="opt-detail">POST /agent/chat/stream</div>
+      </div>
+      <div class="opt-card">
+        <div class="opt-letter opt-b">B</div>
+        <h3>Copilot Skill</h3>
+        <p>Claude Code slash command and interactive CLI adapter. Ask tax questions from your terminal without leaving your workflow.</p>
+        <div class="opt-detail">/project:tax-qa</div>
+      </div>
+      <div class="opt-card">
+        <div class="opt-letter opt-c">C</div>
+        <h3>MCP Server</h3>
+        <p>Two tools over stdio transport &mdash; plug into Claude Desktop or any MCP client for instant knowledge base access.</p>
+        <div class="opt-detail">kb_search &middot; kb_answer</div>
+      </div>
+    </section>
+
+    <!-- Tech Stack -->
+    <div class="tech-strip">
+      <span class="tech-chip">Claude Sonnet</span>
+      <span class="tech-chip">Voyage-3</span>
+      <span class="tech-chip">pgvector</span>
+      <span class="tech-chip">FlashRank</span>
+      <span class="tech-chip">FastAPI</span>
+      <span class="tech-chip">React 19</span>
+      <span class="tech-chip">OpenTelemetry</span>
+      <span class="tech-chip">RAGAS</span>
     </div>
+
+    <!-- Access Code -->
+    <section class="access-section">
+      <div class="access-card">
+        <div class="lock-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </div>
+        <h2>Enter the demo</h2>
+        <p class="subtitle">Use the access code provided in your email</p>
+        {error_html}
+        <form method="post" action="/demo-access">
+          <input id="access_code" type="text" name="access_code" placeholder="Access code" autocomplete="off" spellcheck="false" required />
+          <button type="submit">Open Dashboard</button>
+        </form>
+        <p class="footer-note">This demo is private. The code was included in the submission email.</p>
+      </div>
+    </section>
+
+    <footer class="foot">
+      Built by Syam Metta &middot; Senior AI Builder Qualification &middot;
+      <a href="https://github.com" target="_blank">View Source</a>
+    </footer>
+
   </body>
 </html>"""
     return HTMLResponse(content=html)

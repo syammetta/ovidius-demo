@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.db import get_pool
-from app.ingestion.job_queue import enqueue_job, get_job, list_jobs
+from app.ingestion.job_queue import enqueue_job, get_job, list_jobs, request_pause, resume_job
 from app.ingestion.worker import process_job_by_id
 
 router = APIRouter(prefix="/api")
@@ -100,9 +100,10 @@ async def list_ingest_tasks():
         progress = job.get("progress", {})
         tasks.append({
             "task_id": job["job_id"],
-            "status": "running" if job["status"] == "queued" else job["status"],
+            "status": job["status"],
             "url": job["source"],
             "stats": progress.get("stats"),
+            "progress": progress,
             "error": job["error"],
             "logs": job.get("logs", []),
         })
@@ -117,11 +118,52 @@ async def get_ingest_task(task_id: str):
     progress = job.get("progress", {})
     return {
         "task_id": job["job_id"],
-        "status": "running" if job["status"] == "queued" else job["status"],
+        "status": job["status"],
         "url": job["source"],
         "stats": progress.get("stats"),
+        "progress": progress,
         "error": job["error"],
         "logs": job.get("logs", []),
+    }
+
+
+@router.post("/ingest/tasks/{task_id}/pause")
+async def pause_ingest_task(task_id: str):
+    job = await request_pause(task_id)
+    if not job:
+        raise HTTPException(status_code=400, detail="Task cannot be paused in its current state")
+    await asyncio.sleep(0)
+    fresh = await get_job(task_id)
+    progress = (fresh or {}).get("progress", {})
+    return {
+        "task_id": (fresh or job)["job_id"],
+        "status": (fresh or job)["status"],
+        "url": (fresh or job)["source"],
+        "stats": progress.get("stats"),
+        "progress": progress,
+        "error": (fresh or job)["error"],
+        "logs": (fresh or job).get("logs", []),
+    }
+
+
+@router.post("/ingest/tasks/{task_id}/resume")
+async def resume_ingest_task(task_id: str):
+    job = await resume_job(task_id)
+    if not job:
+        raise HTTPException(status_code=400, detail="Task is not paused")
+    await asyncio.sleep(0)
+    if settings.ingestion_inline_worker:
+        asyncio.create_task(process_job_by_id(task_id, worker_id="web-inline"))
+    fresh = await get_job(task_id)
+    progress = (fresh or {}).get("progress", {})
+    return {
+        "task_id": (fresh or job)["job_id"],
+        "status": (fresh or job)["status"],
+        "url": (fresh or job)["source"],
+        "stats": progress.get("stats"),
+        "progress": progress,
+        "error": (fresh or job)["error"],
+        "logs": (fresh or job).get("logs", []),
     }
 
 

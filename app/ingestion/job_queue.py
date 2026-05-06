@@ -8,7 +8,6 @@ from typing import Any
 
 import asyncpg
 
-from app.config import settings
 from app.db import get_pool
 from app.cache import get_client as get_redis_client
 
@@ -79,7 +78,8 @@ async def update_job_progress(job_id: str, progress: dict[str, Any]) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """UPDATE ingestion_jobs
-               SET progress = $1::jsonb, updated_at = now()
+               SET progress = COALESCE(progress, '{}'::jsonb) || $1::jsonb,
+                   updated_at = now()
                WHERE job_id = $2""",
             json.dumps(progress),
             job_id,
@@ -209,7 +209,12 @@ async def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     return jobs
 
 
-async def pop_job_id(timeout_seconds: int = 5) -> str | None:
+async def pop_job_id(timeout_seconds: int = 1) -> str | None:
+    """Pop the next job ID from the Redis queue.
+
+    timeout_seconds must stay below the shared client's socket_timeout (2s)
+    or BRPOP will be killed by the socket read timeout before Redis responds.
+    """
     client = await get_redis_client()
     if not client:
         return None
@@ -241,3 +246,69 @@ async def recover_stale_running_jobs(stale_after_seconds: int) -> list[str]:
             stale_after_seconds,
         )
     return [r["job_id"] for r in rows]
+
+
+async def request_pause(job_id: str) -> dict[str, Any] | None:
+    """Pause queued jobs immediately; request cooperative pause for running jobs."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE ingestion_jobs
+               SET status = 'paused',
+                   claimed_by = NULL,
+                   claimed_at = NULL,
+                   updated_at = now()
+               WHERE job_id = $1 AND status = 'queued'
+               RETURNING *""",
+            job_id,
+        )
+        if not row:
+            row = await conn.fetchrow(
+                """UPDATE ingestion_jobs
+                   SET progress = progress || '{"pause_requested": true}'::jsonb,
+                       updated_at = now()
+                   WHERE job_id = $1 AND status = 'running'
+                   RETURNING *""",
+                job_id,
+            )
+    return _row_to_job(row) if row else None
+
+
+async def mark_job_paused(job_id: str) -> None:
+    """Mark a running job as paused after worker checkpoint."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE ingestion_jobs
+               SET status = 'paused',
+                   progress = progress - 'pause_requested',
+                   claimed_by = NULL,
+                   claimed_at = NULL,
+                   updated_at = now()
+               WHERE job_id = $1 AND status = 'running'""",
+            job_id,
+        )
+
+
+async def resume_job(job_id: str) -> dict[str, Any] | None:
+    """Resume a paused job by moving it back to queued state."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE ingestion_jobs
+               SET status = 'queued',
+                   progress = progress - 'pause_requested',
+                   updated_at = now()
+               WHERE job_id = $1 AND status = 'paused'
+               RETURNING *""",
+            job_id,
+        )
+    if not row:
+        return None
+    client = await get_redis_client()
+    if client:
+        try:
+            await client.lpush(QUEUE_KEY, job_id)
+        except Exception:
+            pass
+    return _row_to_job(row)

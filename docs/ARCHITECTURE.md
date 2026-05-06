@@ -242,6 +242,31 @@ Notes:
 - Postgres is the authoritative queue and state store.
 - Redis is optional acceleration for faster wake-up; system still works without Redis.
 - In single-service environments, an inline worker fallback can process queued jobs.
+- Production demo topology uses a dedicated worker service (`python -m scripts.ingest_worker`)
+  with `INGESTION_INLINE_WORKER=false` on the web service to avoid blocking UI/API traffic.
+- Migrations should run in a release step / one-shot job, not on every web startup, to
+  reduce cold-start latency and avoid transient `499` client-cancel responses during boot.
+
+### 3.5 Deployment Topology (Railway)
+
+Recommended Railway split for stable demos under load:
+
+1. **Web service**
+   - Start command: `uvicorn app.api.routes:app --host 0.0.0.0 --port ${PORT}`
+   - `INGESTION_INLINE_WORKER=false`
+   - Handles dashboard + API only
+2. **Worker service**
+   - Start command: `python -m scripts.ingest_worker`
+   - Shares the same `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`
+   - Consumes queued ingestion jobs continuously
+3. **Release/migration job**
+   - Run `python scripts/migrate.py` once per deployment
+   - Keep outside the web boot path
+
+Why this matters:
+- Prevents long ingestion from starving request handling threads/event loop.
+- Keeps `/health` and `/` responsive while corpus jobs run.
+- Makes ingestion retry/recovery behavior deterministic across deploys.
 
 ## 4. Evaluation Architecture
 
@@ -381,6 +406,20 @@ finished_at  TIMESTAMPTZ
 created_at   TIMESTAMPTZ
 updated_at   TIMESTAMPTZ
 ```
+
+Status values in current implementation:
+- `queued`
+- `running`
+- `paused`
+- `completed`
+- `failed`
+
+`progress` includes structured runtime telemetry used by the dashboard:
+- `phase` (`starting|crawling|processing|paused|completed`)
+- `completion` (0-100)
+- `pipeline_stage` and `pipeline_steps` (classifier/chunk/context/store/embed)
+- `current_url`, `current_title`, `current_doc`, `total_docs`
+- `metadata_labels` (LLM-labeled doc type/section/topics/tags)
 
 ### ingestion_job_logs
 

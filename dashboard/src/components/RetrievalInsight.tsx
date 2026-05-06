@@ -15,7 +15,7 @@ const INTENT_LABELS: Record<string, { label: string; color: string }> = {
   factual: { label: "Factual Lookup", color: "text-[var(--accent)] bg-[var(--accent-light)]" },
   comparison: { label: "Comparison", color: "text-[var(--yellow)] bg-[var(--yellow-light)]" },
   calculation: { label: "Calculation", color: "text-[var(--green)] bg-[var(--green-light)]" },
-  procedural: { label: "Procedural", color: "text-purple-700 bg-purple-50" },
+  procedural: { label: "Procedural", color: "text-[var(--purple)] bg-[var(--purple-light)]" },
   complex: { label: "Complex / Multi-hop", color: "text-[var(--red)] bg-[var(--red-light)]" },
 };
 
@@ -122,7 +122,7 @@ export default function RetrievalInsight({ detail, stages }: Props) {
                 <span><span className="font-mono text-[var(--green)]">{hsStage.detail.both_hits as number}</span> overlap</span>
               )}
               {typeof hsStage.detail.metadata_boosted === "number" && (hsStage.detail.metadata_boosted as number) > 0 && (
-                <span><span className="font-mono text-purple-600">{hsStage.detail.metadata_boosted as number}</span> meta-boosted</span>
+                <span><span className="font-mono text-[var(--purple)]">{hsStage.detail.metadata_boosted as number}</span> meta-boosted</span>
               )}
               {typeof hsStage.detail.candidates === "number" && (
                 <span><span className="font-mono">{hsStage.detail.candidates as number}</span> fused via RRF</span>

@@ -10,11 +10,13 @@ export default function DocumentsPage() {
   const [detail, setDetail] = useState<{ parent: ParentDetail; chunks: ChunkDetail[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const pageSize = 100;
 
-  async function load() {
+  async function load(offset = 0) {
     setLoading(true);
     try {
-      const data = await fetchDocuments();
+      const data = await fetchDocuments(pageSize, offset);
       setDocs(data.documents);
       setTotal(data.total);
     } catch {
@@ -23,7 +25,7 @@ export default function DocumentsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(page * pageSize); }, [page]);
 
   async function openDetail(parentId: string) {
     if (selectedId === parentId) {
@@ -74,7 +76,7 @@ export default function DocumentsPage() {
           <p className="text-sm text-[var(--text-muted)]">{total} parent chunks in the knowledge base</p>
         </div>
         <button
-          onClick={load}
+          onClick={() => load()}
           disabled={loading}
           className="text-sm text-[var(--accent)] hover:underline disabled:opacity-50"
         >
@@ -107,6 +109,30 @@ export default function DocumentsPage() {
         {!loading && filtered.length === 0 && (
           <div className="text-sm text-[var(--text-muted)] text-center py-8">
             {search ? "No documents match your search" : "No documents ingested yet"}
+          </div>
+        )}
+
+        {!loading && total > pageSize && (
+          <div className="flex items-center justify-between text-sm text-[var(--text-muted)]">
+            <span>
+              Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of {total}
+            </span>
+            <div className="flex gap-2">
+              <button
+                disabled={page === 0}
+                onClick={() => setPage((p) => p - 1)}
+                className="px-3 py-1 rounded-lg border border-[var(--border)] text-xs hover:bg-[var(--bg-secondary)] disabled:opacity-30"
+              >
+                Prev
+              </button>
+              <button
+                disabled={(page + 1) * pageSize >= total}
+                onClick={() => setPage((p) => p + 1)}
+                className="px-3 py-1 rounded-lg border border-[var(--border)] text-xs hover:bg-[var(--bg-secondary)] disabled:opacity-30"
+              >
+                Next
+              </button>
+            </div>
           </div>
         )}
 

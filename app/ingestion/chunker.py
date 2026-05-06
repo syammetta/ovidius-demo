@@ -265,13 +265,14 @@ def chunk_document(
     source_url: str,
     source_title: str,
     section: str,
+    doc_type_override: str | None = None,
 ) -> ChunkResult:
     """Adaptively chunk a document based on its detected type.
 
     Returns parent chunks (for generation) and child chunks (for retrieval),
     linked by parent_id.
     """
-    doc_type = detect_document_type(content, source_url)
+    doc_type = doc_type_override or detect_document_type(content, source_url)
     strategy = CHUNKING_STRATEGIES.get(doc_type, chunk_narrative)
 
     parent_texts, child_texts = strategy(content)
