@@ -45,9 +45,13 @@ export function useQASocket(onEvent: (event: WSEvent) => void) {
   }, []);
 
   const send = useCallback(
-    (question: string, mode: "direct" | "agent" = "direct") => {
+    (question: string, mode: "direct" | "agent" = "direct", sessionId?: string | null) => {
       if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-      wsRef.current.send(JSON.stringify({ question, mode }));
+      wsRef.current.send(JSON.stringify({
+        question,
+        mode,
+        ...(sessionId ? { session_id: sessionId } : {}),
+      }));
     },
     [],
   );
@@ -61,8 +65,10 @@ export function useQASocket(onEvent: (event: WSEvent) => void) {
   return { status, connect, disconnect, send };
 }
 
-export async function fetchQueryLogs(limit = 20): Promise<QueryLogEntry[]> {
-  const res = await fetch(`/query-logs?limit=${limit}`);
+export async function fetchQueryLogs(limit = 20, sessionId?: string | null): Promise<QueryLogEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (sessionId) params.set("session_id", sessionId);
+  const res = await fetch(`/query-logs?${params.toString()}`);
   if (!res.ok) return [];
   return res.json();
 }
@@ -79,4 +85,175 @@ export async function fetchHealth(): Promise<{
   } catch {
     return null;
   }
+}
+
+export async function fetchDocuments(limit = 100, offset = 0) {
+  const res = await fetch(`/api/documents?limit=${limit}&offset=${offset}`);
+  if (!res.ok) throw new Error("Failed to fetch documents");
+  return res.json() as Promise<{ documents: DocumentRow[]; total: number }>;
+}
+
+export async function fetchDocumentDetail(parentId: string) {
+  const res = await fetch(`/api/documents/${encodeURIComponent(parentId)}`);
+  if (!res.ok) throw new Error("Failed to fetch document");
+  return res.json() as Promise<{ parent: ParentDetail; chunks: ChunkDetail[] }>;
+}
+
+export async function deleteDocument(parentId: string) {
+  const res = await fetch(`/api/documents/${encodeURIComponent(parentId)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete document");
+  return res.json();
+}
+
+export async function ingestUrl(url: string, useCache = true) {
+  const res = await fetch("/api/ingest/url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, use_cache: useCache }),
+  });
+  if (!res.ok) throw new Error("Failed to start ingestion");
+  return res.json() as Promise<{ task_id: string; status: string }>;
+}
+
+export async function fetchIngestTasks() {
+  const res = await fetch("/api/ingest/tasks");
+  if (!res.ok) return [];
+  return res.json() as Promise<IngestTask[]>;
+}
+
+export async function fetchIngestTask(taskId: string) {
+  const res = await fetch(`/api/ingest/tasks/${taskId}`);
+  if (!res.ok) return null;
+  return res.json() as Promise<IngestTask>;
+}
+
+export async function ingestCorpus() {
+  const res = await fetch("/api/ingest/corpus", { method: "POST" });
+  if (!res.ok) throw new Error("Failed to start corpus ingestion");
+  return res.json() as Promise<{ task_id: string; status: string }>;
+}
+
+export async function ingestFile(file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/api/ingest/file", { method: "POST", body: form });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Upload failed" }));
+    throw new Error(err.detail || "Upload failed");
+  }
+  return res.json() as Promise<{ task_id: string; status: string; filename: string }>;
+}
+
+export async function fetchTraces(limit = 50) {
+  const res = await fetch(`/traces?limit=${limit}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchTrace(traceId: string) {
+  const res = await fetch(`/traces/${traceId}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchMetrics() {
+  const res = await fetch("/metrics");
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export interface DocumentRow {
+  parent_id: string;
+  source_url: string;
+  source_title: string;
+  section: string;
+  document_type: string;
+  token_count: number;
+  child_count: number;
+  created_at: string;
+}
+
+export interface ParentDetail {
+  parent_id: string;
+  content: string;
+  source_url: string;
+  source_title: string;
+  section: string;
+  document_type: string;
+  token_count: number;
+  created_at: string;
+}
+
+export interface ChunkDetail {
+  chunk_id: string;
+  content: string;
+  contextual_content: string | null;
+  token_count: number;
+  section: string;
+}
+
+export interface IngestTask {
+  task_id: string;
+  status: "running" | "completed" | "failed";
+  url: string;
+  stats: { parents: number; children: number; title?: string; document_type?: string } | null;
+  error: string | null;
+  logs: string[];
+}
+
+export interface EvalRun {
+  run_id: string;
+  started_at: string | null;
+  finished_at: string | null;
+  config: Record<string, unknown> | null;
+  metrics: Record<string, unknown> | null;
+  pair_count: number | null;
+  status: string;
+}
+
+export interface EvalResult {
+  pair_id: string;
+  tier: string;
+  question: string;
+  expected_answer: string | null;
+  actual_answer: string | null;
+  contexts: unknown;
+  metrics: Record<string, unknown> | null;
+  trace_id: string | null;
+  created_at: string;
+}
+
+export interface EvalSummary {
+  recent_runs: EvalRun[];
+  tier_breakdown: {
+    tier: string;
+    count: number;
+    avg_faithfulness: number | null;
+    avg_relevancy: number | null;
+    avg_precision: number | null;
+  }[];
+}
+
+export async function triggerEvalRun(): Promise<{ run_id: string; status: string }> {
+  const res = await fetch("/eval/run", { method: "POST" });
+  if (!res.ok) throw new Error("Failed to trigger eval run");
+  return res.json();
+}
+
+export async function fetchEvalRuns(limit = 20): Promise<EvalRun[]> {
+  const res = await fetch(`/eval/runs?limit=${limit}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchEvalRun(runId: string): Promise<{ run: EvalRun; results: EvalResult[] } | null> {
+  const res = await fetch(`/eval/runs/${encodeURIComponent(runId)}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchEvalSummary(): Promise<EvalSummary | null> {
+  const res = await fetch("/eval/summary");
+  if (!res.ok) return null;
+  return res.json();
 }

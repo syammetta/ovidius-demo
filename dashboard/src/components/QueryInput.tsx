@@ -12,9 +12,10 @@ interface Props {
   isProcessing: boolean;
   connectionStatus: ConnectionStatus;
   onConnect: () => void;
+  hideExamples?: boolean;
 }
 
-export default function QueryInput({ onSubmit, isProcessing, connectionStatus, onConnect }: Props) {
+export default function QueryInput({ onSubmit, isProcessing, connectionStatus, onConnect, hideExamples }: Props) {
   const [question, setQuestion] = useState("");
   const [mode, setMode] = useState<"direct" | "agent">("direct");
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -28,10 +29,11 @@ export default function QueryInput({ onSubmit, isProcessing, connectionStatus, o
     if (!q || isProcessing) return;
     if (connectionStatus !== "connected") {
       onConnect();
-      setTimeout(() => onSubmit(q, mode), 500);
+      setTimeout(() => onSubmit(q, mode), 600);
       return;
     }
     onSubmit(q, mode);
+    setQuestion("");
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -106,21 +108,23 @@ export default function QueryInput({ onSubmit, isProcessing, connectionStatus, o
         </div>
       </div>
 
-      {/* Example chips */}
-      <div className="flex gap-2 flex-wrap justify-center">
-        {EXAMPLES.map((ex) => (
-          <button
-            key={ex}
-            onClick={() => {
-              setQuestion(ex);
-              inputRef.current?.focus();
-            }}
-            className="text-xs px-3 py-1.5 rounded-full border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-          >
-            {ex}
-          </button>
-        ))}
-      </div>
+      {/* Example chips — hidden after first query */}
+      {!hideExamples && (
+        <div className="flex gap-2 flex-wrap justify-center">
+          {EXAMPLES.map((ex) => (
+            <button
+              key={ex}
+              onClick={() => {
+                setQuestion(ex);
+                inputRef.current?.focus();
+              }}
+              className="text-xs px-3 py-1.5 rounded-full border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            >
+              {ex}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -14,6 +14,7 @@ export default defineConfig({
       "/query-logs": "http://localhost:8000",
       "/eval": "http://localhost:8000",
       "/agent": "http://localhost:8000",
+      "/api": "http://localhost:8000",
       "/ws": {
         target: "ws://localhost:8000",
         ws: true,

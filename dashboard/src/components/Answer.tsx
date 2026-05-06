@@ -1,4 +1,6 @@
 import type { Citation } from "../types";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface Props {
   text: string;
@@ -13,8 +15,17 @@ export default function Answer({ text, isStreaming, citations }: Props) {
   return (
     <div className="space-y-4">
       {/* Answer text */}
-      <div className="text-sm leading-7 text-[var(--text)] whitespace-pre-wrap">
-        <span>{text}</span>
+      <div className="markdown-body text-sm leading-7 text-[var(--text)]">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            a: ({ node: _node, ...props }) => (
+              <a {...props} target="_blank" rel="noopener noreferrer" />
+            ),
+          }}
+        >
+          {text || ""}
+        </ReactMarkdown>
         {isStreaming && <span className="streaming-cursor" />}
       </div>
 

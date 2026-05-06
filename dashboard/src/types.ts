@@ -80,10 +80,41 @@ export interface QueryLogEntry {
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
 
+export interface QueryClassification {
+  intent: string;
+  topics: string[];
+  doc_types: string[];
+  sections: string[];
+  reasoning: string;
+}
+
+export interface StrategyInfo {
+  name: string;
+  description: string;
+  top_n: number;
+  top_k: number;
+  metadata_boost: boolean;
+}
+
+export interface RetrievalDetail {
+  confidence: string;
+  chunks: number;
+  parents: number;
+  filtered: string;
+  relevance_ratio: number;
+  retry_performed: boolean;
+  transformed_query: string | null;
+  doc_types: Record<string, number>;
+  duration_ms: number;
+  sources: SourceInfo[];
+  classification: QueryClassification | null;
+  strategy: StrategyInfo | null;
+}
+
 export type WSEvent =
-  | { type: "start"; trace_id: string; mode?: string }
+  | { type: "start"; trace_id: string; mode?: string; session_id?: string }
   | { type: "stage"; stage: string; status: string; [key: string]: unknown }
-  | { type: "retrieval_complete"; confidence: string; chunks: number; parents: number; filtered: string; duration_ms: number; sources: SourceInfo[] }
+  | ({ type: "retrieval_complete" } & RetrievalDetail)
   | { type: "tool_call"; tool_name: string; tool_input: Record<string, unknown> }
   | { type: "tool_result"; tool_name: string; result_preview: string; duration_ms: number }
   | { type: "text_delta"; text: string }

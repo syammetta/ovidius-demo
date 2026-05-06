@@ -2,14 +2,19 @@ import { useEffect, useState } from "react";
 import { fetchQueryLogs } from "../api";
 import type { QueryLogEntry } from "../types";
 
-export default function History() {
+interface Props {
+  sessionId?: string | null;
+  title?: string;
+}
+
+export default function History({ sessionId, title = "Recent Searches" }: Props) {
   const [logs, setLogs] = useState<QueryLogEntry[]>([]);
   const [loading, setLoading] = useState(false);
 
   async function load() {
     setLoading(true);
     try {
-      const data = await fetchQueryLogs(10);
+      const data = await fetchQueryLogs(10, sessionId);
       setLogs(data);
     } catch {
       // ignore
@@ -19,7 +24,7 @@ export default function History() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [sessionId]);
 
   if (logs.length === 0 && !loading) return null;
 
@@ -29,7 +34,7 @@ export default function History() {
       style={{ boxShadow: "var(--shadow-sm)" }}
     >
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-[var(--text)]">Recent Queries</h3>
+        <h3 className="text-sm font-medium text-[var(--text)]">{title}</h3>
         <button
           onClick={load}
           disabled={loading}
