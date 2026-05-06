@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+node_modules
+dashboard/node_modules
+static
+eval/results.json
+.github
+*.md

@@ -27,7 +27,6 @@ function getColor(name: string): string {
 }
 
 function buildTree(spans: Span[]): { span: Span; depth: number }[] {
-  const byId = new Map(spans.map((s) => [s.span_id, s]));
   const children = new Map<string | null, Span[]>();
 
   for (const s of spans) {

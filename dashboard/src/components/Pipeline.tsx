@@ -1,14 +1,5 @@
 import type { PipelineStage, ToolCall } from "../types";
 
-const STAGE_LABELS: Record<string, string> = {
-  hybrid_search: "Hybrid Search",
-  rerank: "Cross-Encoder Rerank",
-  corrective_eval: "Corrective RAG Eval",
-  query_retry: "Query Transform + Retry",
-  parent_fetch: "Parent Chunk Expansion",
-  generation: "Answer Generation",
-};
-
 const STAGE_ICONS: Record<string, string> = {
   hybrid_search: "search",
   rerank: "filter",

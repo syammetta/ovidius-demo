@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        env:
+          ANTHROPIC_API_KEY: test-key
+          VOYAGE_API_KEY: test-key
+          DATABASE_URL: postgresql://test:test@localhost:5432/test
+        run: python -m pytest tests/ -x -q
+
+      - name: Type check frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Railway
+        uses: bervProject/railway-deploy@main
+        with:
+          railway_token: ${{ secrets.RAILWAY_TOKEN }}
+          service: ${{ secrets.RAILWAY_SERVICE }}

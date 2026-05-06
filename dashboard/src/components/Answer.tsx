@@ -7,7 +7,7 @@ interface Props {
   confidence: string | null;
 }
 
-export default function Answer({ text, isStreaming, citations, confidence }: Props) {
+export default function Answer({ text, isStreaming, citations }: Props) {
   if (!text && !isStreaming) {
     return (
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-6 flex items-center justify-center min-h-[200px]">
