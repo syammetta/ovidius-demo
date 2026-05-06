@@ -38,13 +38,16 @@ _MAX_BACKOFF_SECONDS = 20.0
 _INDEX_SEE_PATTERN_THRESHOLD = 3
 _INDEX_COMMA_RATIO_THRESHOLD = 0.15
 _INDEX_SHORT_LINE_RATIO_THRESHOLD = 0.6
+_NUMERIC_DIGIT_RATIO_THRESHOLD = 0.4
 
 
-def _is_index_content(text: str) -> bool:
-    """Detect index/glossary/cross-reference chunks that add little retrieval value.
+def _is_low_value_content(text: str) -> bool:
+    """Detect chunks that add little retrieval value: indexes, glossaries, numeric tables.
 
-    These are alphabetically organized topic lists, "see ..." references,
-    and comma-heavy term listings. Contextualizing them wastes tokens.
+    Catches:
+    - Alphabetical topic lists / cross-references ("see ...")
+    - Comma-heavy term listings
+    - Flattened tax tables (mostly digits with no natural language)
     """
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
     if not lines:
@@ -54,6 +57,7 @@ def _is_index_content(text: str) -> bool:
     if len(words) < 10:
         return False
 
+    # Index/glossary detection
     see_count = text.lower().count("(see") + text.lower().count("(see\n")
     if see_count >= _INDEX_SEE_PATTERN_THRESHOLD:
         return True
@@ -65,6 +69,13 @@ def _is_index_content(text: str) -> bool:
 
     if comma_ratio >= _INDEX_COMMA_RATIO_THRESHOLD and short_ratio >= _INDEX_SHORT_LINE_RATIO_THRESHOLD:
         return True
+
+    # Numeric table detection (flattened tax tables, rate schedules)
+    stripped = text.replace(",", "").replace(".", "").replace(" ", "").replace("\n", "")
+    if stripped:
+        digit_ratio = sum(1 for ch in stripped if ch.isdigit()) / len(stripped)
+        if digit_ratio >= _NUMERIC_DIGIT_RATIO_THRESHOLD:
+            return True
 
     return False
 
@@ -254,7 +265,7 @@ async def contextualize_chunks(
 
         parent_label = parent.section or parent.source_title or parent_id[:12]
 
-        if _is_index_content(parent.content):
+        if _is_low_value_content(parent.content):
             skipped_count += len(group)
             done_count += len(group)
             contextualized.extend(group)
@@ -272,7 +283,7 @@ async def contextualize_chunks(
 
             eligible = []
             for child in group:
-                if _is_index_content(child.content):
+                if _is_low_value_content(child.content):
                     contextualized.append(child)
                     done_count += 1
                     skipped_count += 1
