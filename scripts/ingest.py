@@ -103,16 +103,16 @@ async def ingest_document(doc, stats: dict):
     print(f"    Type: {doc_type} | Parents: {len(result.parents)} | Children: {len(result.children)}")
 
     if not result.children:
-        print(f"    Skipping — no chunks produced")
+        print("    Skipping — no chunks produced")
         return
 
     print(f"    Contextualizing {len(result.children)} chunks...")
     contextualized = await contextualize_chunks(result.children, result.parents)
 
-    print(f"    Storing parents...")
+    print("    Storing parents...")
     await store_parents(result.parents)
 
-    print(f"    Embedding and storing children...")
+    print("    Embedding and storing children...")
     await embed_and_store_children(contextualized)
 
     stats["parents"] += len(result.parents)
@@ -191,7 +191,7 @@ async def main():
             print("Ingesting full IRS documentation corpus...")
             stats = await ingest_corpus(use_cache=use_cache)
 
-        print(f"\nDone.")
+        print("\nDone.")
         print(f"  Pages processed:  {stats['pages']}")
         print(f"  Parent chunks:    {stats['parents']}")
         print(f"  Child chunks:     {stats['children']}")

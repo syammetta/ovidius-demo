@@ -15,7 +15,6 @@ both a JSON file and the eval_runs/eval_results DB tables.
 
 import json
 import time
-import uuid
 from pathlib import Path
 
 from ragas import evaluate

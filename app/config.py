@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     embedding_model: str = "voyage-3"
     embedding_dimension: int = 1024
     generation_model: str = "claude-sonnet-4-6"
-    rerank_model: str = "claude-haiku-4-5-20251001"
+    classification_model: str = "claude-haiku-4-5-20251001"
 
     chunk_size: int = 600
     chunk_overlap: int = 100
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     ingestion_inline_worker: bool = True
     ingestion_worker_poll_ms: int = 2000
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

@@ -7,7 +7,7 @@ OpenTelemetry context if not provided.
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.db import get_pool
 from app.telemetry import get_current_trace_id

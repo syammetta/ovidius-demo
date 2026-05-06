@@ -1,4 +1,4 @@
-export type Page = "ask" | "documents" | "ingest" | "traces" | "eval";
+export type Page = "overview" | "ask" | "documents" | "ingest" | "traces" | "eval";
 
 interface Props {
   current: Page;
@@ -6,6 +6,11 @@ interface Props {
 }
 
 const NAV_ITEMS: { page: Page; label: string; icon: string }[] = [
+  {
+    page: "overview",
+    label: "Overview",
+    icon: "M3.75 3h16.5v4.5H3.75V3zm0 6.75h7.5v11.25h-7.5V9.75zm9.75 0h6.75v4.5H13.5v-4.5zm0 6.75h6.75V21H13.5v-4.5z",
+  },
   {
     page: "ask",
     label: "Ask",
@@ -43,7 +48,7 @@ export default function Sidebar({ current, onNavigate }: Props) {
         </svg>
         <div>
           <div className="text-sm font-medium text-[var(--text)]">Ovidius</div>
-          <div className="text-[10px] text-[var(--text-muted)]">IRS Tax Doc QA</div>
+          <div className="text-[10px] text-[var(--text-muted)]">Documentation QA Agent</div>
         </div>
       </div>
 

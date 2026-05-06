@@ -6,7 +6,6 @@ view of retrieval → rerank → corrective → parent fetch → generation.
 """
 
 import asyncio
-import json
 import time
 import logging
 
@@ -17,7 +16,7 @@ import anthropic
 from app.config import settings
 from app.agent.session import Message, create_session, load_session, save_session
 from app.retrieval.context_builder import retrieve, ProgressCallback
-from app.generation.answerer import generate_answer, SYSTEM_PROMPT, LOW_CONFIDENCE_ADDENDUM
+from app.generation.answerer import SYSTEM_PROMPT, LOW_CONFIDENCE_ADDENDUM
 from app.retrieval.corrective import RetrievalConfidence
 from app.telemetry import (
     get_tracer, get_current_trace_id, get_collector,

@@ -26,7 +26,7 @@ async def run_migrations():
             print(f"Running {migration.name}...")
             sql = migration.read_text()
             await conn.execute(sql)
-            print(f"  Done.")
+            print("  Done.")
     finally:
         await conn.close()
 

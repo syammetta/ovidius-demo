@@ -10,6 +10,7 @@ RRF score boost without hard-filtering out other results.
 Reference: Cormack, Clarke, Buettcher (2009) — Reciprocal Rank Fusion
 """
 
+import logging
 from dataclasses import dataclass
 
 from app.retrieval.vector_store import (
@@ -18,6 +19,8 @@ from app.retrieval.vector_store import (
     bm25_search,
     metadata_vector_search,
 )
+
+logger = logging.getLogger(__name__)
 
 RRF_K = 60
 
@@ -81,19 +84,22 @@ async def hybrid_search(
     lanes_used = 2
 
     if boost_doc_types:
-        metadata_results = await metadata_vector_search(query, boost_doc_types, top_n=top_n)
-        if metadata_results:
-            lanes.append(metadata_results)
-            metadata_ids = {c.chunk_id for c in metadata_results}
-            lanes_used = 3
+        try:
+            metadata_results = await metadata_vector_search(query, boost_doc_types, top_n=top_n)
+            if metadata_results:
+                lanes.append(metadata_results)
+                metadata_ids = {c.chunk_id for c in metadata_results}
+                lanes_used = 3
+        except Exception as e:
+            logger.warning("Metadata vector search failed, continuing with 2 lanes: %s", e)
 
     fused = reciprocal_rank_fusion(*lanes, top_n=top_n)
     fused_ids = {c.chunk_id for c in fused}
 
     both = fused_ids & vector_ids & bm25_ids
-    vector_only = fused_ids & vector_ids - bm25_ids - metadata_ids
-    bm25_only = fused_ids & bm25_ids - vector_ids - metadata_ids
-    metadata_boosted = fused_ids & metadata_ids - (vector_ids & bm25_ids)
+    vector_only = (fused_ids & vector_ids) - bm25_ids - metadata_ids
+    bm25_only = (fused_ids & bm25_ids) - vector_ids - metadata_ids
+    metadata_boosted = (fused_ids & metadata_ids) - (vector_ids & bm25_ids)
 
     return HybridSearchResult(
         chunks=fused,

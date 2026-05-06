@@ -12,12 +12,12 @@ Every stage is instrumented with OpenTelemetry spans.
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Awaitable
 
 from app.db import get_pool
 from app.retrieval.classifier import classify_query, QueryClassification, RetrievalStrategy
-from app.retrieval.hybrid_search import hybrid_search, HybridSearchResult
+from app.retrieval.hybrid_search import hybrid_search
 from app.retrieval.reranker import rerank
 from app.retrieval.corrective import evaluate_retrieval, CorrectedRetrieval, RetrievalConfidence
 from app.retrieval.vector_store import RetrievedChunk

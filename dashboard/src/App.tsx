@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Sidebar from "./components/Sidebar";
 import type { Page } from "./components/Sidebar";
+import OverviewPage from "./pages/OverviewPage";
 import AskPage from "./pages/AskPage";
 import DocumentsPage from "./pages/DocumentsPage";
 import IngestPage from "./pages/IngestPage";
@@ -8,12 +9,13 @@ import TracesPage from "./pages/TracesPage";
 import EvalPage from "./pages/EvalPage";
 
 function App() {
-  const [page, setPage] = useState<Page>("ask");
+  const [page, setPage] = useState<Page>("overview");
 
   return (
     <div className="h-screen flex bg-[var(--bg-secondary)]">
       <Sidebar current={page} onNavigate={setPage} />
       <main className="flex-1 min-w-0 overflow-hidden">
+        {page === "overview" && <OverviewPage onNavigate={setPage} />}
         {page === "ask" && <AskPage />}
         {page === "documents" && <DocumentsPage />}
         {page === "ingest" && <IngestPage />}

@@ -186,9 +186,9 @@ export default function RetrievalInsight({ detail, stages }: Props) {
                 <span className="text-[var(--text-muted)] text-[10px]">no improvement</span>
               )}
             </div>
-            {qrStage.detail.transformed_query && (
+            {qrStage.detail.transformed_query != null && (
               <div className="pl-5.5 text-[var(--text-muted)] italic truncate">
-                "{String(qrStage.detail.transformed_query).slice(0, 80)}"
+                &ldquo;{String(qrStage.detail.transformed_query).slice(0, 80)}&rdquo;
               </div>
             )}
           </div>

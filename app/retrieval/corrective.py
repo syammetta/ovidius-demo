@@ -6,12 +6,13 @@ Instead of blindly trusting retrieval results, score their relevance and decide:
 - LOW_CONFIDENCE: most chunks irrelevant → transform query and retry, or
   acknowledge insufficient context rather than hallucinating
 
-This prevents the most common RAG failure mode: confidently generating answers
-from irrelevant context.
+Uses batched evaluation (single LLM call for all chunks) to keep latency low.
 
 Reference: Yan et al. (2024) — Corrective Retrieval Augmented Generation
 """
 
+import json
+import logging
 from dataclasses import dataclass
 from enum import Enum
 
@@ -19,6 +20,8 @@ import anthropic
 
 from app.config import settings
 from app.retrieval.vector_store import RetrievedChunk
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalConfidence(str, Enum):
@@ -36,14 +39,15 @@ class CorrectedRetrieval:
     transformed_query: str | None = None
 
 
-RELEVANCE_PROMPT = """Given the query and retrieved passage, rate the passage's relevance.
+BATCH_RELEVANCE_PROMPT = """Given the query and retrieved passages, rate EACH passage's relevance.
 
 Query: {query}
 
-Passage:
-{passage}
+{passages}
 
-Is this passage relevant to answering the query? Respond with ONLY one word: "relevant" or "irrelevant"."""
+For each passage number, respond with "relevant" or "irrelevant".
+Return ONLY a JSON object mapping passage numbers to verdicts, like:
+{{"1": "relevant", "2": "irrelevant", "3": "relevant"}}"""
 
 
 async def evaluate_retrieval(
@@ -51,7 +55,7 @@ async def evaluate_retrieval(
     chunks: list[RetrievedChunk],
     relevance_threshold: float = 0.6,
 ) -> CorrectedRetrieval:
-    """Score each chunk's relevance and route based on overall confidence."""
+    """Score each chunk's relevance via a single batched LLM call and route based on confidence."""
     if not chunks:
         return CorrectedRetrieval(
             chunks=[],
@@ -63,24 +67,36 @@ async def evaluate_retrieval(
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     relevant_chunks = []
 
-    for chunk in chunks:
-        try:
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=10,
-                messages=[{
-                    "role": "user",
-                    "content": RELEVANCE_PROMPT.format(
-                        query=query,
-                        passage=(chunk.contextual_content or chunk.content)[:500],
-                    ),
-                }],
-            )
-            verdict = response.content[0].text.strip().lower()
+    try:
+        passages_text = "\n\n".join(
+            f"Passage {i + 1}:\n{(c.contextual_content or c.content)[:400]}"
+            for i, c in enumerate(chunks)
+        )
+
+        response = client.messages.create(
+            model=settings.classification_model,
+            max_tokens=200,
+            messages=[{
+                "role": "user",
+                "content": BATCH_RELEVANCE_PROMPT.format(
+                    query=query,
+                    passages=passages_text,
+                ),
+            }],
+        )
+
+        raw = response.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
+
+        verdicts = json.loads(raw)
+        for i, chunk in enumerate(chunks):
+            verdict = str(verdicts.get(str(i + 1), "")).lower()
             if "relevant" in verdict and "irrelevant" not in verdict:
                 relevant_chunks.append(chunk)
-        except Exception:
-            relevant_chunks.append(chunk)
+    except Exception as e:
+        logger.warning("Batch relevance evaluation failed: %s — passing all chunks through", e)
+        relevant_chunks = list(chunks)
 
     relevance_ratio = len(relevant_chunks) / len(chunks) if chunks else 0
 
@@ -95,8 +111,10 @@ async def evaluate_retrieval(
     if confidence == RetrievalConfidence.LOW_CONFIDENCE:
         transformed_query = await _transform_query(client, query)
 
+    final_chunks = relevant_chunks if relevant_chunks else chunks[:2]
+
     return CorrectedRetrieval(
-        chunks=relevant_chunks if relevant_chunks else chunks[:2],
+        chunks=final_chunks,
         confidence=confidence,
         filtered_count=len(relevant_chunks),
         original_count=len(chunks),
@@ -104,19 +122,23 @@ async def evaluate_retrieval(
     )
 
 
-async def _transform_query(client: anthropic.Anthropic, query: str) -> str:
+async def _transform_query(client: anthropic.Anthropic, query: str) -> str | None:
     """Transform a query that produced poor retrieval into a better search query."""
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=100,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"The following question did not retrieve good results from a documentation "
-                f"knowledge base. Rewrite it as a more specific search query that would "
-                f"match documentation content better. Return ONLY the rewritten query.\n\n"
-                f"Original: {query}"
-            ),
-        }],
-    )
-    return response.content[0].text.strip()
+    try:
+        response = client.messages.create(
+            model=settings.classification_model,
+            max_tokens=100,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"The following question did not retrieve good results from an IRS tax "
+                    f"documentation knowledge base. Rewrite it as a more specific search query "
+                    f"that would match IRS publication content better. Return ONLY the rewritten query.\n\n"
+                    f"Original: {query}"
+                ),
+            }],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.warning("Query transform failed: %s", e)
+        return None

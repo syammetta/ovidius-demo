@@ -26,6 +26,7 @@ TOPIC_CATEGORIES = [
     "income", "deductions", "credits", "retirement", "filing",
     "home", "education", "medical", "business", "investment",
     "family", "employment", "self_employment", "capital_gains",
+    "estate_gift", "international", "compliance", "penalties",
 ]
 
 CLASSIFY_PROMPT = """Classify this tax question for retrieval routing. Return JSON only.
@@ -92,7 +93,7 @@ async def classify_query(question: str) -> tuple[QueryClassification, RetrievalS
     try:
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=settings.classification_model,
             max_tokens=200,
             messages=[{
                 "role": "user",

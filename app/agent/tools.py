@@ -328,15 +328,15 @@ def _handle_calculate(input_data: dict) -> str:
             f"Gross Income:        ${income:>12,.2f}",
             f"Standard Deduction:  ${std_ded:>12,}",
             f"Taxable Income:      ${taxable:>12,.2f}",
-            f"",
-            f"Bracket Breakdown:",
+            "",
+            "Bracket Breakdown:",
             *breakdown,
-            f"",
+            "",
             f"Estimated Tax:       ${tax:>12,.2f}",
             f"Effective Rate:      {effective_rate:>11.1f}%",
             f"Marginal Rate:       {marginal_rate:>11.0%}",
-            f"",
-            f"⚠️  Estimate only. Does not include credits, AMT, NIIT, or state tax.",
+            "",
+            "⚠️  Estimate only. Does not include credits, AMT, NIIT, or state tax.",
         ]
         return "\n".join(lines)
 
