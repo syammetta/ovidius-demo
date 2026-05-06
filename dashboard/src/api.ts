@@ -232,6 +232,7 @@ export interface IngestTask {
       metadata_tags?: string[];
       llm_used?: boolean;
     };
+    pause_requested?: boolean;
     completion?: number;
     total_docs?: number;
     current_doc?: number;

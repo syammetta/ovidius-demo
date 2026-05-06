@@ -26,6 +26,7 @@ export default function IngestPage() {
   const [dragging, setDragging] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [taskAction, setTaskAction] = useState<Record<string, "pause" | "resume" | undefined>>({});
+  const [showFailed, setShowFailed] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -154,6 +155,7 @@ export default function IngestPage() {
       pipelineStage: p.pipeline_stage || "",
       pipelineSteps: p.pipeline_steps || {},
       metadata: p.metadata_labels || null,
+      pauseRequested: !!p.pause_requested,
     };
   };
 
@@ -165,6 +167,9 @@ export default function IngestPage() {
       : status === "skipped"
         ? "bg-[var(--bg-tertiary)] text-[var(--text-muted)] border-[var(--border)]"
         : "bg-[var(--surface)] text-[var(--text-muted)] border-[var(--border-light)]";
+
+  const activeTasks = tasks.filter((t) => t.status !== "failed");
+  const failedTasks = tasks.filter((t) => t.status === "failed");
 
   async function handlePauseTask(taskId: string) {
     setTaskAction((prev) => ({ ...prev, [taskId]: "pause" }));
@@ -360,7 +365,7 @@ export default function IngestPage() {
               </div>
 
               <div className="space-y-3">
-                {tasks.map((task) => (
+                {activeTasks.map((task) => (
                   <div
                     key={task.task_id}
                     className="border border-[var(--border-light)] rounded-lg p-3 space-y-2"
@@ -382,10 +387,14 @@ export default function IngestPage() {
                       {(task.status === "running" || task.status === "queued") && (
                         <button
                           onClick={() => handlePauseTask(task.task_id)}
-                          disabled={taskAction[task.task_id] === "pause"}
+                          disabled={taskAction[task.task_id] === "pause" || getTaskProgress(task).pauseRequested}
                           className="text-[10px] text-[var(--yellow)] hover:underline disabled:opacity-50"
                         >
-                          {taskAction[task.task_id] === "pause" ? "stopping..." : "stop"}
+                          {getTaskProgress(task).pauseRequested
+                            ? "stop requested"
+                            : taskAction[task.task_id] === "pause"
+                              ? "stopping..."
+                              : "stop"}
                         </button>
                       )}
                       {task.status === "paused" && (
@@ -429,6 +438,11 @@ export default function IngestPage() {
                               {prog.currentTitle && <p className="truncate">current: {prog.currentTitle}</p>}
                               {!prog.currentTitle && prog.currentUrl && <p className="truncate">current: {prog.currentUrl}</p>}
                             </div>
+                          )}
+                          {prog.pauseRequested && task.status !== "paused" && (
+                            <p className="text-[11px] text-[var(--yellow)]">
+                              stop requested; waiting for safe checkpoint before showing resume.
+                            </p>
                           )}
                           {prog.metadata && (
                             <div className="pt-1 text-[11px] text-[var(--text-muted)] space-y-0.5">
@@ -500,6 +514,53 @@ export default function IngestPage() {
                   </div>
                 ))}
               </div>
+
+              {failedTasks.length > 0 && (
+                <div className="pt-2 border-t border-[var(--border-light)]">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-medium text-[var(--text-secondary)]">
+                      Failed Tasks ({failedTasks.length})
+                    </h4>
+                    <button
+                      onClick={() => setShowFailed((v) => !v)}
+                      className="text-xs text-[var(--accent)] hover:underline"
+                    >
+                      {showFailed ? "Hide" : "Show"}
+                    </button>
+                  </div>
+
+                  {showFailed && (
+                    <div className="mt-2 space-y-2">
+                      {failedTasks.map((task) => (
+                        <div
+                          key={task.task_id}
+                          className="border border-[var(--red-light)] rounded-lg p-3 space-y-2 bg-[var(--surface)]"
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-[var(--red-light)] text-[var(--red)]">
+                              failed
+                            </span>
+                            <span className="text-xs text-[var(--text)] truncate flex-1">{task.url}</span>
+                            <span className="text-[10px] font-mono text-[var(--text-muted)]">{task.task_id}</span>
+                          </div>
+                          {task.error && (
+                            <p className="text-xs text-[var(--red)]">{task.error}</p>
+                          )}
+                          {task.logs.length > 0 && (
+                            <div className="bg-[var(--bg-secondary)] rounded-lg p-2 max-h-24 overflow-y-auto">
+                              {task.logs.slice(-6).map((log, i) => (
+                                <p key={i} className="text-[11px] font-mono text-[var(--text-secondary)] leading-5">
+                                  <span className="text-[var(--text-muted)] mr-1.5">&gt;</span>{log}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
