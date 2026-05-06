@@ -5,6 +5,8 @@ Voyage API entirely. This helps at query time (same query = instant embedding)
 and during re-ingestion (unchanged chunks skip the API call).
 """
 
+import time
+
 import numpy as np
 import voyageai
 
@@ -12,6 +14,7 @@ from app.config import settings
 from app.db import get_pool
 from app.cache import get_cached_embeddings, cache_embeddings
 from app.ingestion.chunker import ParentChunk, ChildChunk
+from app.telemetry import get_tracer
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -19,28 +22,50 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
 
-    cached = await get_cached_embeddings(texts)
+    tracer = get_tracer("embedder")
 
-    if len(cached) == len(texts):
-        return [cached[i] for i in range(len(texts))]
+    with tracer.start_as_current_span("embed_texts") as span:
+        span.set_attribute("total_texts", len(texts))
+        span.set_attribute("model", settings.embedding_model)
 
-    miss_indices = [i for i in range(len(texts)) if i not in cached]
-    miss_texts = [texts[i] for i in miss_indices]
+        cached = await get_cached_embeddings(texts)
+        cache_hits = len(cached)
+        span.set_attribute("cache_hits", cache_hits)
 
-    client = voyageai.Client(api_key=settings.voyage_api_key)
-    fresh_embeddings: list[list[float]] = []
-    batch_size = 50
+        if cache_hits == len(texts):
+            span.set_attribute("cache_miss", 0)
+            span.set_attribute("voyage_api_calls", 0)
+            return [cached[i] for i in range(len(texts))]
 
-    for i in range(0, len(miss_texts), batch_size):
-        batch = miss_texts[i : i + batch_size]
-        result = client.embed(batch, model=settings.embedding_model)
-        fresh_embeddings.extend(result.embeddings)
+        miss_indices = [i for i in range(len(texts)) if i not in cached]
+        miss_texts = [texts[i] for i in miss_indices]
+        span.set_attribute("cache_miss", len(miss_texts))
 
-    await cache_embeddings(miss_texts, fresh_embeddings)
+        client = voyageai.Client(api_key=settings.voyage_api_key)
+        fresh_embeddings: list[list[float]] = []
+        batch_size = 50
+        api_calls = 0
 
-    result_map = dict(cached)
-    for idx, emb in zip(miss_indices, fresh_embeddings):
-        result_map[idx] = emb
+        for i in range(0, len(miss_texts), batch_size):
+            batch = miss_texts[i : i + batch_size]
+            with tracer.start_as_current_span("voyage_embed_batch") as batch_span:
+                batch_span.set_attribute("batch_size", len(batch))
+                batch_span.set_attribute("batch_index", i // batch_size)
+                t0 = time.perf_counter()
+                result = client.embed(batch, model=settings.embedding_model)
+                api_ms = round((time.perf_counter() - t0) * 1000, 1)
+                batch_span.set_attribute("api_latency_ms", api_ms)
+                if hasattr(result, "total_tokens"):
+                    batch_span.set_attribute("total_tokens", result.total_tokens)
+            fresh_embeddings.extend(result.embeddings)
+            api_calls += 1
+
+        span.set_attribute("voyage_api_calls", api_calls)
+        await cache_embeddings(miss_texts, fresh_embeddings)
+
+        result_map = dict(cached)
+        for idx, emb in zip(miss_indices, fresh_embeddings):
+            result_map[idx] = emb
 
     return [result_map[i] for i in range(len(texts))]
 

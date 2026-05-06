@@ -12,11 +12,13 @@ This is the "no one size fits all" routing layer.
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 import anthropic
 
 from app.config import settings
+from app.telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -90,20 +92,28 @@ STRATEGY_MAP: dict[str, dict] = {
 
 async def classify_query(question: str) -> tuple[QueryClassification, RetrievalStrategy]:
     """Classify a query and determine the retrieval strategy."""
+    tracer = get_tracer("classifier")
     try:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        response = client.messages.create(
-            model=settings.classification_model,
-            max_tokens=200,
-            messages=[{
-                "role": "user",
-                "content": CLASSIFY_PROMPT.format(
-                    question=question,
-                    intents=INTENT_TYPES,
-                    topics=TOPIC_CATEGORIES,
-                ),
-            }],
-        )
+        with tracer.start_as_current_span("classify_llm_call") as span:
+            span.set_attribute("model", settings.classification_model)
+            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            t0 = time.perf_counter()
+            response = client.messages.create(
+                model=settings.classification_model,
+                max_tokens=200,
+                messages=[{
+                    "role": "user",
+                    "content": CLASSIFY_PROMPT.format(
+                        question=question,
+                        intents=INTENT_TYPES,
+                        topics=TOPIC_CATEGORIES,
+                    ),
+                }],
+            )
+            llm_ms = round((time.perf_counter() - t0) * 1000, 1)
+            span.set_attribute("llm_latency_ms", llm_ms)
+            span.set_attribute("input_tokens", response.usage.input_tokens)
+            span.set_attribute("output_tokens", response.usage.output_tokens)
 
         raw = response.content[0].text.strip()
         if raw.startswith("```"):

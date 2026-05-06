@@ -110,6 +110,13 @@ async def generate_answer(question: str, retrieval: RetrievalResult) -> AnswerRe
 
         gen_ms = round((time.perf_counter() - t0) * 1000, 1)
         span.set_attribute("generation_ms", gen_ms)
+        span.set_attribute("ttft_ms", gen_ms)
+        span.set_attribute("input_tokens", response.usage.input_tokens)
+        span.set_attribute("output_tokens", response.usage.output_tokens)
+        if hasattr(response.usage, "cache_creation_input_tokens"):
+            span.set_attribute("cache_creation_input_tokens", response.usage.cache_creation_input_tokens or 0)
+        if hasattr(response.usage, "cache_read_input_tokens"):
+            span.set_attribute("cache_read_input_tokens", response.usage.cache_read_input_tokens or 0)
         record_generation_latency(gen_ms)
 
     answer_text = response.content[0].text
